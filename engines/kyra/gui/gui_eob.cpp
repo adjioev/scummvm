@@ -5296,14 +5296,20 @@ EoBCoreEngine::AutomapLayout EoBCoreEngine::automapLayout() const {
 	const int ow = _system->getOverlayWidth();
 	const int oh = _system->getOverlayHeight();
 	AutomapLayout l;
-	l.cell = MIN((ow - ow / 12) / 32, (oh - oh / 12) / 32);
-	if (l.cell < 2)
-		l.cell = 2;
-	const int grid = l.cell * 32;
-	l.pad = MAX(6, l.cell);
 	l.titleH = MAX(14, oh / 22);
 	l.footerH = MAX(36, oh / 11); // strip below the grid: note line + auto-info line
 	l.legendH = MAX(12, oh / 30); // legend row at the very bottom
+	// Size one cell so the whole panel - the 32x32 grid plus padding, title, footer
+	// and legend - fits inside the overlay on both axes. Counting padding, a side is
+	// about 34 cells (32 grid + ~2 for pad, since pad ~= cell). Reserving only a flat
+	// margin like before ignored the tall chrome and pushed the title off the top.
+	const int marginH = MAX(8, ow / 20);
+	const int marginV = MAX(8, oh / 20);
+	const int cw = (ow - marginH) / 34;
+	const int ch = (oh - marginV - l.titleH - l.footerH - l.legendH) / 34;
+	l.cell = MAX(2, MIN(cw, ch));
+	const int grid = l.cell * 32;
+	l.pad = MAX(6, l.cell);
 	l.panelW = grid + l.pad * 2;
 	l.panelH = grid + l.pad * 2 + l.titleH + l.footerH + l.legendH;
 	l.panelX = (ow - l.panelW) / 2;
