@@ -107,6 +107,32 @@ make -j$(nproc)             # relink
 
 ---
 
+## Running a downloaded release
+
+Grab the build for your platform from the
+[Releases page](https://github.com/adjioev/scummvm/releases), unzip it, and run
+the `scummvm` binary. You still need your own *Eye of the Beholder* game data
+files – this is the engine, not the games.
+
+**macOS (Apple Silicon).** The binary is not notarized by Apple, so macOS
+quarantines it on download. Clear the quarantine once, then run it from Terminal:
+
+```sh
+xattr -dr com.apple.quarantine scummvm-eob-macos-arm64
+./scummvm-eob-macos-arm64/scummvm
+```
+
+(Double-clicking in Finder also works after the `xattr` step, but Terminal is the
+surest way.)
+
+**Windows.** Unzip and run `scummvm.exe`. SmartScreen may warn about an unknown
+publisher – choose *More info ▸ Run anyway*.
+
+**Linux.** Unzip and run `./scummvm`. Install SDL2 if it is missing
+(`sudo apt install libsdl2-2.0-0`).
+
+Then add a game as below.
+
 ## Using it
 
 1. Add and start an *Eye of the Beholder I* or *II* game in ScummVM as usual.
