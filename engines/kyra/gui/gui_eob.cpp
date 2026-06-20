@@ -5415,6 +5415,8 @@ void EoBCoreEngine::automapDraw() {
 	const uint32 cWallSeen  = fmt.ARGBToColor(255, 72, 104, 126); // glimpsed-only wall (dim, no glow)
 	const uint32 cWallGlow  = fmt.ARGBToColor(255, 38,  78, 104); // soft halo behind walls
 	const uint32 cWall      = fmt.ARGBToColor(255,108, 158, 188); // crisp wall core line
+	const uint32 cDoor      = fmt.ARGBToColor(255, 90, 210, 120); // door leaf across a cell
+	const uint32 cDoorSeen  = fmt.ARGBToColor(255, 56, 116,  78); // glimpsed-only door (dim)
 	const uint32 cPartyGlow = fmt.ARGBToColor(255,190,  90,  40); // halo behind party arrow
 	const uint32 cParty     = fmt.ARGBToColor(255,255, 210,  90); // party arrow
 	const uint32 cTitle     = fmt.ARGBToColor(255,140, 200, 235); // header text
@@ -5486,6 +5488,19 @@ void EoBCoreEngine::automapDraw() {
 				wall[d] = !(_wllWallFlags[_levelBlockProperties[nb].walls[d ^ 2]] & 1);
 			}
 
+			// Doors: the dungeon view renders a wall as a door when its wall flags
+			// carry bit 8 (same test as drawSceneShapes). A door tile holds the door
+			// frame on both walls of the axis you pass through, so detect the axis and
+			// draw a single leaf across the middle of the cell - and drop the solid
+			// wall bars on that axis so the door reads as a door, not a sealed wall.
+			const LevelBlockProperty *bp = &_levelBlockProperties[block];
+			const bool doorNS = (_wllWallFlags[bp->walls[0]] & 8) || (_wllWallFlags[bp->walls[2]] & 8);
+			const bool doorEW = (_wllWallFlags[bp->walls[1]] & 8) || (_wllWallFlags[bp->walls[3]] & 8);
+			if (doorNS)
+				wall[0] = wall[2] = false;
+			if (doorEW)
+				wall[1] = wall[3] = false;
+
 			if (visited) {
 				// Solid floor; adjacent explored cells merge into continuous corridors.
 				surf.fillRect(Common::Rect(sx, sy, sx + cell, sy + cell), cFloor);
@@ -5524,6 +5539,19 @@ void EoBCoreEngine::automapDraw() {
 					surf.fillRect(Common::Rect(sx, sy + cell - wt, sx + cell, sy + cell), cWallSeen);
 				if (wall[3]) // west
 					surf.fillRect(Common::Rect(sx, sy, sx + wt, sy + cell), cWallSeen);
+			}
+
+			// Door leaf: a short bar across the middle of the cell, perpendicular to
+			// the way you pass through, drawn on top of the floor (dim for seen-only).
+			if (doorNS || doorEW) {
+				const uint32 doorCol = visited ? cDoor : cDoorSeen;
+				const int dt = MAX(2, wt + 1);   // leaf thickness
+				const int dm = MAX(1, cell / 5); // inset from the side walls
+				const int dcx = sx + cell / 2, dcy = sy + cell / 2;
+				if (doorNS)
+					surf.fillRect(Common::Rect(sx + dm, dcy - dt / 2, sx + cell - dm, dcy - dt / 2 + dt), doorCol);
+				if (doorEW)
+					surf.fillRect(Common::Rect(dcx - dt / 2, sy + dm, dcx - dt / 2 + dt, sy + cell - dm), doorCol);
 			}
 
 			// Auto-classified glyph (stairs/teleporter), if the game tagged this cell.

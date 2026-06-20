@@ -18,6 +18,8 @@ overlay on top of the dungeon view. Toggle it with **Tab**.
 - **Explored cells** are drawn solid with bright walls.
 - **Glimpsed cells** (seen down a corridor but never walked) are drawn dimmer,
   so "saw it" reads differently from "walked it".
+- **Doors** are drawn as a green leaf cutting across the middle of the cell,
+  along the passage axis – distinct from solid walls.
 - The party is shown as an arrow pointing the way it faces.
 - The game keeps running underneath; you can keep moving with the map open
   (see shortcuts below) and the map updates live.
