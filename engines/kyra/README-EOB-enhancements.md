@@ -70,7 +70,15 @@ With a spellbook open:
 
 ## Building
 
-Standard ScummVM build – nothing special is required. From the repository root:
+Easiest – use the bundled helper from the repository root:
+
+```sh
+./build.sh          # configure (if needed) + build everything
+./build.sh kyra     # fast build: only the KYRA engine (Eye of the Beholder)
+./build.sh run      # launch the built scummvm
+```
+
+Or the standard ScummVM build by hand – nothing special is required:
 
 ```sh
 ./configure                 # first time only (add --enable-engine-static=kyra etc. if needed)
