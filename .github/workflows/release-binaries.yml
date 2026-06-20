@@ -58,19 +58,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
-        run: brew install sdl2 sdl2_net freetype libpng libvorbis libogg flac
+        run: brew install sdl2 sdl2_net freetype libpng libvorbis libogg flac dylibbundler
       - name: Configure
         run: ./configure ${ENGINES}
-      - name: Build app bundle
+      - name: Build
+        # Plain dynamic build (like Linux). The `make bundle` / scummvm-static path
+        # links system libs statically (libz.a/libbz2.a, which Homebrew doesn't ship)
+        # and pulls in every engine's detection, so it is avoided here.
+        run: make -j$(sysctl -n hw.ncpu)
+      - name: Package (self-contained)
         run: |
-          # Build the static binary first (parallel), then package the .app. Running
-          # `make bundle -j` races: bundle-pack can cp scummvm-static before it exists.
-          make -j$(sysctl -n hw.ncpu) scummvm-static
-          make bundle
-      - name: Package
-        run: |
-          # ScummVM.app is self-contained; zip it (ditto keeps macOS metadata).
-          ditto -c -k --keepParent ScummVM.app scummvm-eob-macos-arm64.zip
+          DIR=scummvm-eob-macos-arm64
+          mkdir -p "$DIR/libs"
+          cp scummvm "$DIR"/
+          cp $(make print-dists) "$DIR"/ 2>/dev/null || true
+          # Copy the Homebrew dylibs the binary needs into libs/ and rewrite the load
+          # paths to @executable_path/libs, so the binary runs without Homebrew.
+          dylibbundler -od -b -x "$DIR/scummvm" -d "$DIR/libs" -p @executable_path/libs
+          ditto -c -k --keepParent "$DIR" scummvm-eob-macos-arm64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: scummvm-eob-macos-arm64
