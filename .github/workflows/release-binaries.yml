@@ -18,7 +18,9 @@ permissions:
   contents: read
 
 env:
-  ENGINES: --enable-engine=kyra
+  # KYRA only (Eye of the Beholder and friends): disable everything else first,
+  # otherwise --enable-engine just adds kyra on top of all the default engines.
+  ENGINES: --disable-all-engines --enable-engine=kyra
 
 jobs:
   linux:
@@ -60,7 +62,11 @@ jobs:
       - name: Configure
         run: ./configure ${ENGINES}
       - name: Build app bundle
-        run: make bundle -j$(sysctl -n hw.ncpu)
+        run: |
+          # Build the static binary first (parallel), then package the .app. Running
+          # `make bundle -j` races: bundle-pack can cp scummvm-static before it exists.
+          make -j$(sysctl -n hw.ncpu) scummvm-static
+          make bundle
       - name: Package
         run: |
           # ScummVM.app is self-contained; zip it (ditto keeps macOS metadata).
