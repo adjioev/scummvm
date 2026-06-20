@@ -280,6 +280,12 @@ Common::Error EoBCoreEngine::loadGameState(int slot) {
 		}
 	}
 
+	// Automap explored-block bitfield (non-original feature). Saves predating this
+	// feature have none, so clear it and only read when the save is new enough.
+	memset(_automapVisited, 0, sizeof(_automapVisited));
+	if (header.version >= 25)
+		in.read(_automapVisited, sizeof(_automapVisited));
+
 	loadLevel(_currentLevel, _currentSub);
 	if (_flags.platform == Common::kPlatformFMTowns && _gameToLoad != -1)
 		_screen->setScreenPalette(_screen->getPalette(0));
@@ -537,6 +543,9 @@ Common::Error EoBCoreEngine::saveGameStateIntern(int slot, const char *saveName,
 			out->writeUint32BE(w->duration);
 		}
 	}
+
+	// Automap explored-block bitfield (non-original feature), one bitfield per level.
+	out->write(_automapVisited, sizeof(_automapVisited));
 
 	out->finalize();
 

@@ -753,6 +753,7 @@ void EoBCoreEngine::moveParty(uint16 block) {
 	updateAllMonsterDests();
 	uint16 old = _currentBlock;
 	_currentBlock = block;
+	automapMarkVisited(block);
 
 	runLevelScript(old, 2);
 

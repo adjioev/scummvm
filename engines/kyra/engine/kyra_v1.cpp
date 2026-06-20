@@ -379,6 +379,8 @@ void KyraEngine_v1::setupKeyMap() {
 		{ KC(F4), 115, 102, 96 },
 		{ KC(F5), 116, 103, 97 },
 		{ KC(F6), 117, 104, 98 },
+		{ KC(TAB), 118, 118, 118 },
+		{ KC(g), 119, 119, 119 },
 		{ KC(a), 31, 31, UNKNOWN_KEYCODE },
 		{ KC(b), 50, 50, 66 },
 		{ KC(c), 48, 48, 67 },

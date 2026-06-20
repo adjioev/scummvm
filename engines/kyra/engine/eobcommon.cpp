@@ -113,6 +113,9 @@ EoBCoreEngine::EoBCoreEngine(OSystem *system, const GameFlags &flags) : KyraRpgE
 	_preventMonsterFlash = false;
 	_sceneShakeCountdown = 0;
 
+	memset(_automapVisited, 0, sizeof(_automapVisited));
+	_automapVisible = false;
+
 	_teleporterPulse = 0;
 
 	_dscShapeCoords = 0;
@@ -374,6 +377,19 @@ Common::KeymapArray EoBCoreEngine::initKeymaps(const Common::String &gameId) {
 	addKeymapAction(keyMap, "MVR", _("Move right"), Common::KeyState(Common::KEYCODE_RIGHT), "RIGHT", "JOY_RIGHT_TRIGGER");
 	addKeymapAction(keyMap, "TL", _("Turn left"), Common::KeyState(Common::KEYCODE_HOME), "HOME", "JOY_LEFT");
 	addKeymapAction(keyMap, "TR", _("Turn right"), Common::KeyState(Common::KEYCODE_PAGEUP), "PAGEUP", "JOY_RIGHT");
+	// WASD/QE navigation (non-original): each action emits the same key event as
+	// the matching arrow action, so it flows through the normal movement path.
+	addKeymapAction(keyMap, "MVF2", _("Move forward (WASD)"), Common::KeyState(Common::KEYCODE_UP), "w", "");
+	addKeymapAction(keyMap, "MVB2", _("Move backwards (WASD)"), Common::KeyState(Common::KEYCODE_DOWN), "s", "");
+	addKeymapAction(keyMap, "MVL2", _("Move left (WASD)"), Common::KeyState(Common::KEYCODE_LEFT), "a", "");
+	addKeymapAction(keyMap, "MVR2", _("Move right (WASD)"), Common::KeyState(Common::KEYCODE_RIGHT), "d", "");
+	addKeymapAction(keyMap, "TL2", _("Turn left (WASD)"), Common::KeyState(Common::KEYCODE_HOME), "q", "");
+	addKeymapAction(keyMap, "TR2", _("Turn right (WASD)"), Common::KeyState(Common::KEYCODE_PAGEUP), "e", "");
+
+	addKeymapAction(keyMap, "AMAP", _("Toggle automap"), Common::KeyState(Common::KEYCODE_TAB, '\t'), "TAB", "");
+	// Non-original keyboard helpers for mouseless play.
+	addKeymapAction(keyMap, "USEW", _("Use wall ahead"), Common::KeyState(Common::KEYCODE_f, 'f'), "f", "");
+	addKeymapAction(keyMap, "PICK", _("Pick up item ahead"), Common::KeyState(Common::KEYCODE_g, 'g'), "g", "");
 	addKeymapAction(keyMap, "INV", _("Open / Close inventory"), Common::KeyState(Common::KEYCODE_i, 'i'), "i", "JOY_X");
 	addKeymapAction(keyMap, "SCE", _("Switch inventory / Character screen"), Common::KeyState(Common::KEYCODE_p, 'p'), "p", "JOY_Y");
 	addKeymapAction(keyMap, "CMP", _("Camp"), Common::KeyState(Common::KEYCODE_c, 'c'), "c", "");
@@ -757,10 +773,34 @@ void EoBCoreEngine::runLoop() {
 	_runFlag = true;
 
 	while (!shouldQuit() && _runFlag) {
-		uint32 frameEnd = _system->getMillis() + 8;	
+		uint32 frameEnd = _system->getMillis() + 8;
 		checkPartyStatus(true);
-		checkInput(_activeButtons, true, 0);
+		int inputFlag = checkInput(_activeButtons, true, 0);
 		removeInputTop();
+
+		if (inputFlag && inputFlag == _keyMap[Common::KEYCODE_TAB]) {
+			automapToggle();
+		} else if (inputFlag && inputFlag == _keyMap[Common::KEYCODE_f]) {
+			gui_interactAhead();
+		} else if (inputFlag && inputFlag == _keyMap[Common::KEYCODE_g]) {
+			gui_pickUpItemAhead();
+		} else if (inputFlag) {
+			// Number keys 1-6 attack with the matching party member (non-original).
+			// Outside the spellbook these digits are otherwise unused in the main
+			// loop, so they double as quick-attack keys for mouseless play. Plain
+			// digit attacks with the primary hand (slot 0); Shift+digit (the 0x100
+			// modifier bit set by checkInput) attacks with the off hand (slot 1).
+			for (int i = 0; i < 6; ++i) {
+				int base = _keyMap[(Common::KeyCode)(Common::KEYCODE_1 + i)];
+				if (inputFlag == base) {
+					gui_attackWithCharacter(i, 0);
+					break;
+				} else if (inputFlag == (base | 0x100)) {
+					gui_attackWithCharacter(i, 1);
+					break;
+				}
+			}
+		}
 
 		if (!_runFlag)
 			break;
@@ -769,8 +809,16 @@ void EoBCoreEngine::runLoop() {
 		updateScriptTimers();
 		updateWallOfForceTimers();
 
-		if (_sceneUpdateRequired && !_sceneShakeCountdown)
+		if (_automapVisible) {
+			// Keep the live dungeon view updating behind the map: the overlay is a
+			// persistent separate layer, so redrawing the scene under it (on
+			// movement) doesn't disturb the map and shows through its transparency.
+			if (_sceneUpdateRequired && !_sceneShakeCountdown)
+				drawScene(1);
+			automapDraw();
+		} else if (_sceneUpdateRequired && !_sceneShakeCountdown) {
 			drawScene(1);
+		}
 
 		updatePlayTimer();
 		updateAnimations();

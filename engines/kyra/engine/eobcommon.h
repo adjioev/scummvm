@@ -652,6 +652,15 @@ protected:
 	void drawSceneShapes(int start = 0, int end = 18, int drawFlags = 0xFF);
 	void drawDecorations(int index);
 
+	// Automap (non-original feature): tracks explored blocks per level and
+	// draws a north-up minimap over the dungeon viewport, toggled with 'm'.
+	void automapMarkVisited(uint16 block);
+	bool automapIsVisited(uint16 block) const;
+	void automapToggle();
+	void automapDraw();
+	uint8 _automapVisited[20][128];
+	bool _automapVisible;
+
 	int calcNewBlockPositionAndTestPassability(uint16 curBlock, uint16 direction);
 	void notifyBlockNotPassable();
 	void increaseStepsCounter();
@@ -802,6 +811,13 @@ protected:
 	void gui_processCharPortraitClick(int index);
 	void gui_processWeaponSlotClickLeft(int charIndex, int slotIndex);
 	void gui_processWeaponSlotClickRight(int charIndex, int slotIndex);
+	// Keyboard attack (non-original): triggers the given character's weapon hand
+	// from a key, mirroring a right-click on the portrait's weapon slot.
+	void gui_attackWithCharacter(int charIndex, int slot);
+	// Keyboard interactions with the dungeon ahead (non-original): operate a wall
+	// feature (lever/switch/niche/door) or grab an item off the floor in front.
+	void gui_interactAhead();
+	void gui_pickUpItemAhead();
 	void gui_processInventorySlotClick(int slot);
 
 	virtual void gui_updateAnimations() {}

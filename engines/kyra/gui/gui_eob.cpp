@@ -33,6 +33,9 @@
 #include "common/system.h"
 #include "common/savefile.h"
 #include "graphics/scaler.h"
+#include "graphics/surface.h"
+#include "graphics/font.h"
+#include "graphics/fontman.h"
 
 namespace Kyra {
 
@@ -1395,6 +1398,52 @@ void EoBCoreEngine::gui_processCharPortraitClick(int index) {
 
 	gui_drawCharPortraitWithStats(a);
 	gui_drawCharPortraitWithStats(index);
+}
+
+void EoBCoreEngine::gui_attackWithCharacter(int charIndex, int slot) {
+	// Keyboard attack (non-original): only meaningful in the main play field, not
+	// while the inventory/character screen or a spellbook is open. slot 0 is the
+	// primary hand, slot 1 the off hand (mirrors a right-click on that weapon).
+	if (_currentControlMode || _updateFlags)
+		return;
+	if (!testCharacter(charIndex, 0x0D))
+		return;
+	gui_processWeaponSlotClickRight(charIndex, slot);
+}
+
+void EoBCoreEngine::gui_interactAhead() {
+	// Keyboard "use" (non-original): operate the wall feature directly in front of
+	// the party (lever, switch, niche, pryable door). Mirrors clickedSceneSpecial().
+	if (_currentControlMode || _updateFlags)
+		return;
+	_clickedSpecialFlag = 0x40;
+	specialWallAction(calcNewBlockPosition(_currentBlock, _currentDirection), _currentDirection);
+}
+
+void EoBCoreEngine::gui_pickUpItemAhead() {
+	// Keyboard "grab" (non-original): take the first item lying on the floor of the
+	// block ahead (only if the wall in front is not solid), else the block we stand
+	// on. The item goes to the hand, exactly as a click on the floor item would.
+	if (_currentControlMode || _updateFlags || _itemInHand)
+		return;
+
+	uint16 search[2];
+	int n = 0;
+	if (_wllWallFlags[_levelBlockProperties[_currentBlock].walls[_currentDirection]] & 1)
+		search[n++] = calcNewBlockPosition(_currentBlock, _currentDirection);
+	search[n++] = _currentBlock;
+
+	for (int i = 0; i < n; ++i) {
+		// Floor items sit in one of the four tile quadrants (pos 0-3).
+		for (int pos = 0; pos < 4; ++pos) {
+			int itm = getQueuedItem((Item *)&_levelBlockProperties[search[i]].drawObjects, pos, -1);
+			if (itm) {
+				setHandItem(itm);
+				_sceneUpdateRequired = true;
+				return;
+			}
+		}
+	}
 }
 
 void EoBCoreEngine::gui_processWeaponSlotClickLeft(int charIndex, int slotIndex) {
@@ -4970,6 +5019,193 @@ const uint8 GUI_EoB::_highlightColorTableAmiga[] = { 0x13, 0x0B, 0x12, 0x0A, 0x1
 const uint8 GUI_EoB::_highlightColorTablePC98[] = { 0x0C, 0x0D, 0x0E, 0x0F, 0x0E, 0x0D, 0x00 };
 
 const uint8 GUI_EoB::_highlightColorTableSegaCD[] = { 0x3D, 0x3D, 0x3D, 0x3E, 0x3E, 0x3E, 0x3F, 0x3F, 0x3F, 0x3E, 0x3E, 0x3E, 0x00 };
+
+// Automap (non-original feature). The dungeon is a 32x32 grid; a block index
+// packs the position as (y << 5) | x. We track explored blocks per level in a
+// bitfield and draw a north-up minimap over the 3D viewport when toggled with 'm'.
+
+void EoBCoreEngine::automapMarkVisited(uint16 block) {
+	if (_currentLevel >= 20 || block >= 1024)
+		return;
+	_automapVisited[_currentLevel][block >> 3] |= (1 << (block & 7));
+}
+
+bool EoBCoreEngine::automapIsVisited(uint16 block) const {
+	if (_currentLevel >= 20 || block >= 1024)
+		return false;
+	return (_automapVisited[_currentLevel][block >> 3] & (1 << (block & 7))) != 0;
+}
+
+void EoBCoreEngine::automapToggle() {
+	_automapVisible = !_automapVisible;
+	if (_automapVisible) {
+		// Show the high-resolution overlay layer (inGUI=false keeps the game loop
+		// running underneath); the map is drawn into it every frame.
+		_system->showOverlay(false);
+	} else {
+		_system->hideOverlay();
+		// Force the dungeon view to be redrawn now that the overlay is gone.
+		_sceneUpdateRequired = true;
+	}
+}
+
+// Fill a solid triangle (a,b,c) by scanlines. Used for the party's facing arrow.
+static void automapFillTri(Graphics::Surface &s, int ax, int ay, int bx, int by, int cx, int cy, uint32 color) {
+	// Sort vertices by y (ay <= by <= cy).
+	if (ay > by) { SWAP(ax, bx); SWAP(ay, by); }
+	if (ay > cy) { SWAP(ax, cx); SWAP(ay, cy); }
+	if (by > cy) { SWAP(bx, cx); SWAP(by, cy); }
+	if (cy == ay)
+		return;
+
+	for (int y = ay; y <= cy; ++y) {
+		// Long edge a->c spans the whole height; the short edges are a->b then b->c.
+		int xLong = ax + (cx - ax) * (y - ay) / (cy - ay);
+		int xShort = (y < by)
+			? (by == ay ? ax : ax + (bx - ax) * (y - ay) / (by - ay))
+			: (cy == by ? bx : bx + (cx - bx) * (y - by) / (cy - by));
+		int x0 = MIN(xLong, xShort);
+		int x1 = MAX(xLong, xShort);
+		s.hLine(x0, y, x1, color);
+	}
+}
+
+void EoBCoreEngine::automapDraw() {
+	automapMarkVisited(_currentBlock);
+
+	// The map is drawn on the overlay layer, which runs at the window's output
+	// resolution instead of the game's 320x200 paletted screen. That gives crisp,
+	// high-resolution output regardless of the game's low res.
+	const int ow = _system->getOverlayWidth();
+	const int oh = _system->getOverlayHeight();
+	const Graphics::PixelFormat fmt = _system->getOverlayFormat();
+
+	// "Tactical glass" palette. ARGB so the overlay is alpha-blended over the live
+	// game (the OpenGL backend composites the overlay with traditional
+	// transparency). On backends whose overlay format has no alpha channel the
+	// alpha is simply ignored (opaque).
+	const uint32 cDim       = fmt.ARGBToColor(110,  4,  6, 10);   // dim the game outside the panel
+	const uint32 cShadow    = fmt.ARGBToColor(110,  0,  0,  0);   // panel drop shadow
+	const uint32 cPanel     = fmt.ARGBToColor(140, 14, 20, 30);   // dark glass panel
+	const uint32 cFrame     = fmt.ARGBToColor(255, 96, 150, 190); // bright panel border
+	const uint32 cFrameDim  = fmt.ARGBToColor(160, 40,  70, 100); // inner border line
+	// Everything inside the map is opaque: fillRect overwrites (it does not blend
+	// within the surface), so a sub-255 alpha here would punch a see-through hole
+	// to the live game rather than tint the floor. Only the dim/shadow/panel below
+	// are intentionally translucent.
+	const uint32 cGrid      = fmt.ARGBToColor(255, 40,  66,  84); // faint grid over floor
+	const uint32 cFloor     = fmt.ARGBToColor(255, 26,  46,  60); // explored floor fill
+	const uint32 cWallGlow  = fmt.ARGBToColor(255, 48, 104, 140); // soft halo behind walls
+	const uint32 cWall      = fmt.ARGBToColor(255,170, 235, 255); // crisp wall core line
+	const uint32 cPartyGlow = fmt.ARGBToColor(255,190,  90,  40); // halo behind party arrow
+	const uint32 cParty     = fmt.ARGBToColor(255,255, 210,  90); // party arrow
+	const uint32 cTitle     = fmt.ARGBToColor(255,140, 200, 235); // header text
+
+	// Fixed grid: the whole 32x32 level is centered at a constant scale, so the
+	// map never rescales or jumps as new areas are explored.
+	int cell = MIN((ow - ow / 12) / 32, (oh - oh / 12) / 32);
+	if (cell < 2)
+		cell = 2;
+	const int grid = cell * 32;
+	const int pad = MAX(6, cell);
+	const int titleH = MAX(14, oh / 22);
+
+	// Centered panel sized to wrap the grid plus padding and a title strip.
+	const int panelW = grid + pad * 2;
+	const int panelH = grid + pad * 2 + titleH;
+	const int panelX = (ow - panelW) / 2;
+	const int panelY = (oh - panelH) / 2;
+	const int offX = panelX + pad;
+	const int offY = panelY + pad + titleH;
+
+	const int wt = MAX(1, cell / 6); // wall bar thickness
+	const int hw = MAX(2, wt + cell / 8); // wall halo thickness
+
+	Graphics::Surface surf;
+	surf.create(ow, oh, fmt);
+
+	// Dim the whole screen, then stack a drop shadow and the glass panel.
+	surf.fillRect(Common::Rect(0, 0, ow, oh), cDim);
+	const int sh = MAX(3, cell / 2);
+	surf.fillRect(Common::Rect(panelX + sh, panelY + sh, panelX + panelW + sh, panelY + panelH + sh), cShadow);
+	surf.fillRect(Common::Rect(panelX, panelY, panelX + panelW, panelY + panelH), cPanel);
+
+	// Double frame: a bright outer rule and a dim inner rule for a beveled look.
+	surf.frameRect(Common::Rect(panelX, panelY, panelX + panelW, panelY + panelH), cFrame);
+	surf.frameRect(Common::Rect(panelX + 1, panelY + 1, panelX + panelW - 1, panelY + panelH - 1), cFrame);
+	surf.frameRect(Common::Rect(panelX + 4, panelY + 4, panelX + panelW - 4, panelY + panelH - 4), cFrameDim);
+
+	// Title bar: "LEVEL N" centered, with a separator rule beneath it.
+	if (const Graphics::Font *font = FontMan.getFontByUsage(Graphics::FontManager::kBigGUIFont)) {
+		Common::String title = Common::String::format("LEVEL %d", _currentLevel);
+		const int ty = panelY + (titleH + pad - font->getFontHeight()) / 2;
+		font->drawString(&surf, title, panelX, ty, panelW, cTitle, Graphics::kTextAlignCenter);
+	}
+	surf.hLine(panelX + pad, panelY + titleH + pad / 2, panelX + panelW - pad, cFrameDim);
+
+	for (int by = 0; by < 32; ++by) {
+		for (int bx = 0; bx < 32; ++bx) {
+			const uint16 block = (by << 5) | bx;
+			if (!automapIsVisited(block))
+				continue;
+
+			const int sx = offX + bx * cell;
+			const int sy = offY + by * cell;
+			const LevelBlockProperty *p = &_levelBlockProperties[block];
+
+			// Solid floor; adjacent explored cells merge into continuous corridors.
+			surf.fillRect(Common::Rect(sx, sy, sx + cell, sy + cell), cFloor);
+			// Faint inner grid so individual tiles are still legible.
+			surf.hLine(sx, sy, sx + cell - 1, cGrid);
+			surf.vLine(sx, sy, sy + cell - 1, cGrid);
+
+			// Walls: a soft halo first, then a crisp core line on top, so impassable
+			// sides "glow". Same bit moveParty() tests, so open doors show as gaps.
+			if (!(_wllWallFlags[p->walls[0]] & 1)) { // north
+				surf.fillRect(Common::Rect(sx, sy, sx + cell, sy + hw), cWallGlow);
+				surf.fillRect(Common::Rect(sx, sy, sx + cell, sy + wt), cWall);
+			}
+			if (!(_wllWallFlags[p->walls[1]] & 1)) { // east
+				surf.fillRect(Common::Rect(sx + cell - hw, sy, sx + cell, sy + cell), cWallGlow);
+				surf.fillRect(Common::Rect(sx + cell - wt, sy, sx + cell, sy + cell), cWall);
+			}
+			if (!(_wllWallFlags[p->walls[2]] & 1)) { // south
+				surf.fillRect(Common::Rect(sx, sy + cell - hw, sx + cell, sy + cell), cWallGlow);
+				surf.fillRect(Common::Rect(sx, sy + cell - wt, sx + cell, sy + cell), cWall);
+			}
+			if (!(_wllWallFlags[p->walls[3]] & 1)) { // west
+				surf.fillRect(Common::Rect(sx, sy, sx + hw, sy + cell), cWallGlow);
+				surf.fillRect(Common::Rect(sx, sy, sx + wt, sy + cell), cWall);
+			}
+		}
+	}
+
+	// Party: a triangular arrow pointing the way the party faces, over a soft halo.
+	const int mx = offX + (_currentBlock & 0x1F) * cell;
+	const int my = offY + (_currentBlock >> 5) * cell;
+	const int cx = mx + cell / 2;
+	const int cy = my + cell / 2;
+	const int r = MAX(2, cell / 2 - MAX(1, cell / 6)); // arrow reach from center
+	const int b = MAX(2, r * 3 / 4);                   // half-width of arrow base
+	int tipX, tipY, l1X, l1Y, l2X, l2Y;
+	switch (_currentDirection) {
+	case 1:  tipX = cx + r; tipY = cy; l1X = cx - b; l1Y = cy - b; l2X = cx - b; l2Y = cy + b; break; // east
+	case 2:  tipX = cx; tipY = cy + r; l1X = cx - b; l1Y = cy - b; l2X = cx + b; l2Y = cy - b; break; // south
+	case 3:  tipX = cx - r; tipY = cy; l1X = cx + b; l1Y = cy - b; l2X = cx + b; l2Y = cy + b; break; // west
+	default: tipX = cx; tipY = cy - r; l1X = cx - b; l1Y = cy + b; l2X = cx + b; l2Y = cy + b; break; // north
+	}
+	automapFillTri(surf, tipX, tipY, l1X, l1Y, l2X, l2Y, cPartyGlow);
+	// Slightly shrink toward the centroid for the bright core arrow.
+	const int gx = (tipX + l1X + l2X) / 3, gy = (tipY + l1Y + l2Y) / 3;
+	automapFillTri(surf,
+		tipX + (gx - tipX) / 4, tipY + (gy - tipY) / 4,
+		l1X + (gx - l1X) / 4, l1Y + (gy - l1Y) / 4,
+		l2X + (gx - l2X) / 4, l2Y + (gy - l2Y) / 4, cParty);
+
+	_system->copyRectToOverlay(surf.getPixels(), surf.pitch, 0, 0, ow, oh);
+	surf.free();
+	_system->updateScreen();
+}
 
 } // End of namespace Kyra
 
