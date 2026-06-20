@@ -1,5 +1,13 @@
 # [ScummVM README](https://www.scummvm.org/) · [![Translation status](https://translations.scummvm.org/widgets/scummvm/-/scummvm/svg-badge.svg)](https://translations.scummvm.org/engage/scummvm/?utm_source=widget) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md#pull-requests)
 
+> **This fork** adds quality-of-life enhancements for *Eye of the Beholder I & II*
+> (KYRA engine): an automap overlay with manual notes and auto-collected
+> stairs/teleporter/item info, plus keyboard play helpers (WASD movement,
+> off-hand attacks, arrow-key spell selection, Enter-to-cast).
+> See **[engines/kyra/README-EOB-enhancements.md](engines/kyra/README-EOB-enhancements.md)**
+> for what it does, how to build, and the shortcuts. Everything below is the
+> upstream ScummVM README.
+
 ## About ScummVM
 
 ScummVM allows you to play classic graphic point-and-click adventure games, text adventure games, and RPGs, as long as you already have the game data files. ScummVM replaces the executable files shipped with the games, which means you can now play your favorite games on all your favorite devices.
