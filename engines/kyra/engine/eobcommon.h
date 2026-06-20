@@ -668,7 +668,7 @@ protected:
 	// added/edited from the open map. Cells are picked by clicking the map; the
 	// 'n' key opens a small text editor for the selected cell. Keyed per level.
 	struct AutomapLayout {
-		int cell, pad, titleH, footerH;
+		int cell, pad, titleH, footerH, legendH;
 		int panelX, panelY, panelW, panelH;
 		int offX, offY; // top-left of the 32x32 grid
 	};
@@ -698,6 +698,12 @@ protected:
 	uint16 _automapSelectedBlock;
 	bool _automapEditing;
 	Common::String _automapEditBuffer;
+	// Transient cache of which cells carry a door, so an open door (whose live wall
+	// id loses the door flag while animating) still draws. Bit 0 = N/S leaf, bit 1
+	// = E/W leaf. Rebuilt from level data as cells are drawn; not saved.
+	Common::HashMap<uint32, uint8> _automapDoorBits;
+	// Move the selection cursor by whole cells (keyboard note placement).
+	void automapMoveSelection(int dx, int dy);
 
 	int calcNewBlockPositionAndTestPassability(uint16 curBlock, uint16 direction);
 	void notifyBlockNotPassable();

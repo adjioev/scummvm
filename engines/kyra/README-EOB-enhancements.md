@@ -20,6 +20,10 @@ overlay on top of the dungeon view. Toggle it with **Tab**.
   so "saw it" reads differently from "walked it".
 - **Doors** are drawn as a green leaf cutting across the middle of the cell,
   along the passage axis – distinct from solid walls.
+- **Interactive walls** are flagged with a pip on the side that holds them:
+  magenta for a switch / lever / button, amber for a niche / alcove (item stash).
+- The title shows the **level and the selected cell's coordinates**, and a
+  **legend** along the bottom keys the symbols (Door / Stairs / Tele / Switch / Note).
 - The party is shown as an arrow pointing the way it faces.
 - The game keeps running underneath; you can keep moving with the map open
   (see shortcuts below) and the map updates live.
@@ -136,6 +140,7 @@ make -j$(nproc)             # relink
 | --- | --- |
 | Arrow keys / **W A S D** | Move the party (map updates live) |
 | **Home/PageUp**, **Q/E** | Turn |
+| **Shift + arrows** | Move the selection cursor cell by cell |
 | **Mouse click** on an explored cell | Select it and edit its note |
 | **N** | Edit the selected cell's note |
 | **Enter** / **Esc** (in editor) | Save / cancel the note |

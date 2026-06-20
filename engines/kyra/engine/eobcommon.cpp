@@ -418,6 +418,13 @@ Common::KeymapArray EoBCoreEngine::initKeymaps(const Common::String &gameId) {
 	addKeymapAction(keyMap, "AT5B", _("Attack 5 (off hand)"), Common::KeyState(Common::KEYCODE_5, '5', Common::KBD_SHIFT), "S+5", "");
 	addKeymapAction(keyMap, "AT6B", _("Attack 6 (off hand)"), Common::KeyState(Common::KEYCODE_6, '6', Common::KBD_SHIFT), "S+6", "");
 
+	// Non-original: Shift+arrows move the automap selection cursor (so notes can be
+	// placed without the mouse). Handled in runLoop only while the map is open.
+	addKeymapAction(keyMap, "MSU", _("Map cursor up"), Common::KeyState(Common::KEYCODE_UP, 0, Common::KBD_SHIFT), "S+UP", "");
+	addKeymapAction(keyMap, "MSD", _("Map cursor down"), Common::KeyState(Common::KEYCODE_DOWN, 0, Common::KBD_SHIFT), "S+DOWN", "");
+	addKeymapAction(keyMap, "MSL", _("Map cursor left"), Common::KeyState(Common::KEYCODE_LEFT, 0, Common::KBD_SHIFT), "S+LEFT", "");
+	addKeymapAction(keyMap, "MSR", _("Map cursor right"), Common::KeyState(Common::KEYCODE_RIGHT, 0, Common::KBD_SHIFT), "S+RIGHT", "");
+
 	return Common::Keymap::arrayOf(keyMap);
 }
 
@@ -800,6 +807,18 @@ void EoBCoreEngine::runLoop() {
 			automapHandleClick();
 		} else if (_automapVisible && inputFlag && inputFlag == _keyMap[Common::KEYCODE_n]) {
 			automapEditNote();
+		} else if (_automapVisible && inputFlag &&
+		           (inputFlag == (_keyMap[Common::KEYCODE_UP] | 0x100) || inputFlag == (_keyMap[Common::KEYCODE_DOWN] | 0x100) ||
+		            inputFlag == (_keyMap[Common::KEYCODE_LEFT] | 0x100) || inputFlag == (_keyMap[Common::KEYCODE_RIGHT] | 0x100))) {
+			// Shift+arrows move the map selection cursor (place notes without a mouse).
+			if (inputFlag == (_keyMap[Common::KEYCODE_UP] | 0x100))
+				automapMoveSelection(0, -1);
+			else if (inputFlag == (_keyMap[Common::KEYCODE_DOWN] | 0x100))
+				automapMoveSelection(0, 1);
+			else if (inputFlag == (_keyMap[Common::KEYCODE_LEFT] | 0x100))
+				automapMoveSelection(-1, 0);
+			else
+				automapMoveSelection(1, 0);
 		} else if (_automapVisible && inputFlag &&
 		           (inputFlag == _keyMap[Common::KEYCODE_UP] || inputFlag == _keyMap[Common::KEYCODE_DOWN] ||
 		            inputFlag == _keyMap[Common::KEYCODE_LEFT] || inputFlag == _keyMap[Common::KEYCODE_RIGHT] ||

@@ -5303,13 +5303,23 @@ EoBCoreEngine::AutomapLayout EoBCoreEngine::automapLayout() const {
 	l.pad = MAX(6, l.cell);
 	l.titleH = MAX(14, oh / 22);
 	l.footerH = MAX(36, oh / 11); // strip below the grid: note line + auto-info line
+	l.legendH = MAX(12, oh / 30); // legend row at the very bottom
 	l.panelW = grid + l.pad * 2;
-	l.panelH = grid + l.pad * 2 + l.titleH + l.footerH;
+	l.panelH = grid + l.pad * 2 + l.titleH + l.footerH + l.legendH;
 	l.panelX = (ow - l.panelW) / 2;
 	l.panelY = (oh - l.panelH) / 2;
 	l.offX = l.panelX + l.pad;
 	l.offY = l.panelY + l.pad + l.titleH;
 	return l;
+}
+
+// Move the selection cursor by whole cells, clamped to the 32x32 grid. Used by the
+// Shift+arrow keys so notes can be placed without the mouse.
+void EoBCoreEngine::automapMoveSelection(int dx, int dy) {
+	const uint16 cur = (_automapSelectedBlock != 0xFFFF) ? _automapSelectedBlock : _currentBlock;
+	const int bx = CLIP<int>((cur & 0x1F) + dx, 0, 31);
+	const int by = CLIP<int>((cur >> 5) + dy, 0, 31);
+	_automapSelectedBlock = (by << 5) | bx;
 }
 
 // Map a click (overlay coordinates) to a cell: select it and, if it has been
@@ -5417,6 +5427,8 @@ void EoBCoreEngine::automapDraw() {
 	const uint32 cWall      = fmt.ARGBToColor(255,108, 158, 188); // crisp wall core line
 	const uint32 cDoor      = fmt.ARGBToColor(255, 90, 210, 120); // door leaf across a cell
 	const uint32 cDoorSeen  = fmt.ARGBToColor(255, 56, 116,  78); // glimpsed-only door (dim)
+	const uint32 cSwitch    = fmt.ARGBToColor(255,235, 110, 210); // switch/lever/button pip
+	const uint32 cNiche     = fmt.ARGBToColor(255,240, 180,  80); // niche/alcove (item stash) pip
 	const uint32 cPartyGlow = fmt.ARGBToColor(255,190,  90,  40); // halo behind party arrow
 	const uint32 cParty     = fmt.ARGBToColor(255,255, 210,  90); // party arrow
 	const uint32 cTitle     = fmt.ARGBToColor(255,140, 200, 235); // header text
@@ -5456,9 +5468,11 @@ void EoBCoreEngine::automapDraw() {
 	surf.frameRect(Common::Rect(panelX + 1, panelY + 1, panelX + panelW - 1, panelY + panelH - 1), cFrame);
 	surf.frameRect(Common::Rect(panelX + 4, panelY + 4, panelX + panelW - 4, panelY + panelH - 4), cFrameDim);
 
-	// Title bar: "LEVEL N" centered, with a separator rule beneath it.
+	// Title bar: "LEVEL N   x,y" centered (coords of the selected cell, or the
+	// party's if nothing is selected), with a separator rule beneath it.
 	if (const Graphics::Font *font = FontMan.getFontByUsage(Graphics::FontManager::kBigGUIFont)) {
-		Common::String title = Common::String::format("LEVEL %d", _currentLevel);
+		const uint16 cb = (_automapSelectedBlock != 0xFFFF) ? _automapSelectedBlock : _currentBlock;
+		Common::String title = Common::String::format("LEVEL %d    %d,%d", _currentLevel, cb & 0x1F, cb >> 5);
 		const int ty = panelY + (titleH + pad - font->getFontHeight()) / 2;
 		font->drawString(&surf, title, panelX, ty, panelW, cTitle, Graphics::kTextAlignCenter);
 	}
@@ -5493,9 +5507,19 @@ void EoBCoreEngine::automapDraw() {
 			// frame on both walls of the axis you pass through, so detect the axis and
 			// draw a single leaf across the middle of the cell - and drop the solid
 			// wall bars on that axis so the door reads as a door, not a sealed wall.
+			// The result is cached per cell (bit 0 = N/S, bit 1 = E/W): an open door
+			// loses the flag mid-animation, but the cache keeps it on the map.
 			const LevelBlockProperty *bp = &_levelBlockProperties[block];
-			const bool doorNS = (_wllWallFlags[bp->walls[0]] & 8) || (_wllWallFlags[bp->walls[2]] & 8);
-			const bool doorEW = (_wllWallFlags[bp->walls[1]] & 8) || (_wllWallFlags[bp->walls[3]] & 8);
+			const uint32 bkey = automapNoteKey(block);
+			uint8 dbits = _automapDoorBits.contains(bkey) ? _automapDoorBits[bkey] : 0;
+			if ((_wllWallFlags[bp->walls[0]] & 8) || (_wllWallFlags[bp->walls[2]] & 8))
+				dbits |= 1;
+			if ((_wllWallFlags[bp->walls[1]] & 8) || (_wllWallFlags[bp->walls[3]] & 8))
+				dbits |= 2;
+			if (dbits)
+				_automapDoorBits[bkey] = dbits;
+			const bool doorNS = (dbits & 1) != 0;
+			const bool doorEW = (dbits & 2) != 0;
 			if (doorNS)
 				wall[0] = wall[2] = false;
 			if (doorEW)
@@ -5554,8 +5578,26 @@ void EoBCoreEngine::automapDraw() {
 					surf.fillRect(Common::Rect(dcx - dt / 2, sy + dm, dcx - dt / 2 + dt, sy + cell - dm), doorCol);
 			}
 
+			// Interactive special walls: a small pip on the side that carries a
+			// switch / lever / button (magenta), or a niche / alcove that can stash
+			// items (amber). Types 5/6 are doors, already shown as a leaf, so skip them.
+			for (int d = 0; d < 4; ++d) {
+				const uint8 st = _specialWallTypes[bp->walls[d]];
+				if (st == 0 || st == 5 || st == 6)
+					continue;
+				const uint32 pcol = (st == 10) ? cNiche : cSwitch;
+				const int ps = MAX(2, cell / 4);
+				int px, py;
+				switch (d) {
+				case 0:  px = sx + cell / 2 - ps / 2; py = sy; break;                  // north
+				case 1:  px = sx + cell - ps;         py = sy + cell / 2 - ps / 2; break; // east
+				case 2:  px = sx + cell / 2 - ps / 2; py = sy + cell - ps; break;      // south
+				default: px = sx;                     py = sy + cell / 2 - ps / 2; break; // west
+				}
+				surf.fillRect(Common::Rect(px, py, px + ps, py + ps), pcol);
+			}
+
 			// Auto-classified glyph (stairs/teleporter), if the game tagged this cell.
-			const uint32 bkey = automapNoteKey(block);
 			if (_automapIcons.contains(bkey))
 				automapDrawIcon(surf, sx, sy, cell, _automapIcons[bkey], visited ? cIcon : cWallSeen);
 
@@ -5601,7 +5643,7 @@ void EoBCoreEngine::automapDraw() {
 	// Footer strip: a separator rule, then two stacked lines for the selected cell -
 	// the manual note (bright) on top, and the game's own auto-info plus any items
 	// lying there (dim) below.
-	const int footerY = panelY + panelH - L.footerH;
+	const int footerY = panelY + panelH - L.legendH - L.footerH;
 	surf.hLine(panelX + pad, footerY, panelX + panelW - pad, cFrameDim);
 	if (const Graphics::Font *ffont = FontMan.getFontByUsage(Graphics::FontManager::kBigGUIFont)) {
 		const int fh = ffont->getFontHeight();
@@ -5622,7 +5664,9 @@ void EoBCoreEngine::automapDraw() {
 		Common::String line1;
 		uint32 col1 = cFooter;
 		if (_automapEditing) {
-			line1 = Common::String("Note: ") + _automapEditBuffer + "_";
+			// Blinking text cursor at the end of the edit buffer.
+			const char *caret = ((_system->getMillis() / 400) & 1) ? "_" : " ";
+			line1 = Common::String("Note: ") + _automapEditBuffer + caret;
 		} else if (_automapSelectedBlock != 0xFFFF) {
 			if (_automapNotes.contains(selKey)) {
 				line1 = _automapNotes[selKey];
@@ -5649,6 +5693,37 @@ void EoBCoreEngine::automapDraw() {
 				AM_DRAW_ROW(line2, footerY + rowH, cFooterDim);
 		}
 		#undef AM_DRAW_ROW
+	}
+
+	// Legend strip along the very bottom: a small key of the map's symbols.
+	if (const Graphics::Font *lfont = FontMan.getFontByUsage(Graphics::FontManager::kGUIFont)) {
+		const int legendY = panelY + panelH - L.legendH;
+		const int lh = lfont->getFontHeight();
+		const int ty = legendY + (L.legendH - lh) / 2;
+		const int gsz = MAX(4, L.legendH / 2);          // glyph swatch size
+		const int lgy = legendY + (L.legendH - gsz) / 2;
+		const int slotW = (panelW - 2 * pad) / 5;
+		const int lw = slotW - gsz - 3;                 // label width per slot
+		int lx = panelX + pad;
+		// Door (green leaf)
+		surf.fillRect(Common::Rect(lx, lgy + gsz / 3, lx + gsz, lgy + gsz - gsz / 3), cDoor);
+		lfont->drawString(&surf, "Door", lx + gsz + 3, ty, lw, cFooterDim, Graphics::kTextAlignLeft);
+		lx += slotW;
+		// Stairs (triangle)
+		automapFillTri(surf, lx, lgy + gsz, lx + gsz, lgy + gsz, lx + gsz / 2, lgy, cIcon);
+		lfont->drawString(&surf, "Stairs", lx + gsz + 3, ty, lw, cFooterDim, Graphics::kTextAlignLeft);
+		lx += slotW;
+		// Teleporter (ring)
+		surf.frameRect(Common::Rect(lx, lgy, lx + gsz, lgy + gsz), cIcon);
+		lfont->drawString(&surf, "Tele", lx + gsz + 3, ty, lw, cFooterDim, Graphics::kTextAlignLeft);
+		lx += slotW;
+		// Switch / lever (magenta pip)
+		surf.fillRect(Common::Rect(lx, lgy, lx + gsz, lgy + gsz), cSwitch);
+		lfont->drawString(&surf, "Switch", lx + gsz + 3, ty, lw, cFooterDim, Graphics::kTextAlignLeft);
+		lx += slotW;
+		// Note (amber dot)
+		surf.fillRect(Common::Rect(lx, lgy, lx + gsz, lgy + gsz), cNote);
+		lfont->drawString(&surf, "Note", lx + gsz + 3, ty, lw, cFooterDim, Graphics::kTextAlignLeft);
 	}
 
 	_system->copyRectToOverlay(surf.getPixels(), surf.pitch, 0, 0, ow, oh);
