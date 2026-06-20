@@ -20,7 +20,9 @@ permissions:
 env:
   # KYRA only (Eye of the Beholder and friends): disable everything else first,
   # otherwise --enable-engine just adds kyra on top of all the default engines.
-  ENGINES: --disable-all-engines --enable-engine=kyra
+  # eob and lol are SUBENGINES of kyra and must be listed explicitly - enabling
+  # just "kyra" leaves them off, so the build would report "EOB is not supported".
+  ENGINES: --disable-all-engines --enable-engine=kyra,eob,lol
 
 jobs:
   linux:
