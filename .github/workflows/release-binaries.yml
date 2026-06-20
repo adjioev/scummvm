@@ -75,6 +75,11 @@ jobs:
           # Copy the Homebrew dylibs the binary needs into libs/ and rewrite the load
           # paths to @executable_path/libs, so the binary runs without Homebrew.
           dylibbundler -od -b -x "$DIR/scummvm" -d "$DIR/libs" -p @executable_path/libs
+          # dylibbundler rewrites the binary (install_name_tool), which invalidates
+          # its automatic ad-hoc signature; Apple Silicon then refuses to run it.
+          # Re-sign the bundled dylibs and the binary ad-hoc (-s -, no certificate).
+          codesign --force --sign - "$DIR"/libs/*.dylib || true
+          codesign --force --sign - "$DIR/scummvm"
           ditto -c -k --keepParent "$DIR" scummvm-eob-macos-arm64.zip
       - uses: actions/upload-artifact@v4
         with:
@@ -143,3 +148,18 @@ jobs:
         with:
           files: artifacts/**/*
           generate_release_notes: true
+          body: |
+            Eye of the Beholder I & II automap and quality-of-life enhancements
+            (KYRA engine). Unzip a build for your platform and run `scummvm`.
+
+            **macOS (Apple Silicon / M1+):** the binary is unsigned, so after
+            unzipping clear the download quarantine once:
+            ```
+            xattr -dr com.apple.quarantine scummvm-eob-macos-arm64
+            ```
+            then run `./scummvm-eob-macos-arm64/scummvm`.
+
+            **Windows / Linux:** unzip and run `scummvm`(`.exe`). Linux needs SDL2
+            installed (`sudo apt install libsdl2-2.0-0`).
+
+            See `engines/kyra/README-EOB-enhancements.md` for features and shortcuts.
