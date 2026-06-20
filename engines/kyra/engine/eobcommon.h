@@ -656,10 +656,48 @@ protected:
 	// draws a north-up minimap over the dungeon viewport, toggled with 'm'.
 	void automapMarkVisited(uint16 block);
 	bool automapIsVisited(uint16 block) const;
+	// "Seen" blocks are ones the party has looked at (line of sight) but never
+	// stepped on; the map draws them dimmer so they read as glimpsed, not walked.
+	void automapMarkSeen(uint16 block);
+	bool automapIsSeen(uint16 block) const;
+	void automapMarkSeenFromCurrent();
 	void automapToggle();
 	void automapDraw();
+
+	// Per-cell map notes (non-original): free text attached to a level block,
+	// added/edited from the open map. Cells are picked by clicking the map; the
+	// 'n' key opens a small text editor for the selected cell. Keyed per level.
+	struct AutomapLayout {
+		int cell, pad, titleH, footerH;
+		int panelX, panelY, panelW, panelH;
+		int offX, offY; // top-left of the 32x32 grid
+	};
+	AutomapLayout automapLayout() const;
+	uint32 automapNoteKey(uint16 block) const { return ((uint32)_currentLevel << 16) | block; }
+	void automapHandleClick();
+	void automapEditNote();
+
+	// Auto-collected per-cell info (non-original), kept separate from the manual
+	// notes above: a glyph code (stairs/teleporter) plus a short description the
+	// game fills in on its own as the party explores. Stair direction and teleport
+	// destinations are learned by observation - tagged on the cell we leave from
+	// when a script moves the party to another level. Items lying on a cell are not
+	// stored; they are read live from the level data when the cell is selected.
+	enum AutomapIcon { kAmNone = 0, kAmStairsDown = 1, kAmStairsUp = 2, kAmTeleport = 3 };
+	void automapCollectCellInfo(uint16 block);
+	void automapTagTransition(int fromLevel, uint16 fromBlock, int toLevel);
+	Common::String automapLiveItems(uint16 block) const;
+	void automapDrawIcon(Graphics::Surface &surf, int sx, int sy, int cell, uint8 icon, uint32 color) const;
+
 	uint8 _automapVisited[20][128];
+	uint8 _automapSeen[20][128];
 	bool _automapVisible;
+	Common::HashMap<uint32, Common::String> _automapNotes;
+	Common::HashMap<uint32, uint8> _automapIcons;
+	Common::HashMap<uint32, Common::String> _automapAutoInfo;
+	uint16 _automapSelectedBlock;
+	bool _automapEditing;
+	Common::String _automapEditBuffer;
 
 	int calcNewBlockPositionAndTestPassability(uint16 curBlock, uint16 direction);
 	void notifyBlockNotPassable();
@@ -769,6 +807,8 @@ protected:
 	void gui_drawDialogueBox();
 	virtual void gui_drawSpellbook();
 	void gui_drawSpellbookScrollArrow(int x, int y, int direction);
+	// Move the open spellbook's highlight (arrow-key spell selection, non-original).
+	void gui_spellbookNavigate(int direction);
 	void gui_updateSlotAfterScrollUse();
 	void gui_updateControls();
 	void gui_toggleButtons();

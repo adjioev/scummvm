@@ -29,6 +29,14 @@ For a more comprehensive changelog of the latest experimental code, see:
  GLK:
    - Exposed text and engine settings in the GUI.
 
+ KYRA:
+   - Added an automap overlay for Eye of the Beholder I and II, with manual
+     per-cell notes, auto-collected stairs/teleporter/item info, and save
+     persistence.
+   - Added keyboard play helpers for Eye of the Beholder: WASD movement,
+     off-hand attacks (Shift+1..6), arrow-key spell selection, and Enter to
+     cast and close the spellbook.
+
  LastExpress:
    - The game has been supported for a while now (2026.1.0), we just
      forgot to add a news entry here. Whoops!

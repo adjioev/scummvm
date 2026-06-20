@@ -114,7 +114,10 @@ EoBCoreEngine::EoBCoreEngine(OSystem *system, const GameFlags &flags) : KyraRpgE
 	_sceneShakeCountdown = 0;
 
 	memset(_automapVisited, 0, sizeof(_automapVisited));
+	memset(_automapSeen, 0, sizeof(_automapSeen));
 	_automapVisible = false;
+	_automapSelectedBlock = 0xFFFF;
+	_automapEditing = false;
 
 	_teleporterPulse = 0;
 
@@ -390,6 +393,7 @@ Common::KeymapArray EoBCoreEngine::initKeymaps(const Common::String &gameId) {
 	// Non-original keyboard helpers for mouseless play.
 	addKeymapAction(keyMap, "USEW", _("Use wall ahead"), Common::KeyState(Common::KEYCODE_f, 'f'), "f", "");
 	addKeymapAction(keyMap, "PICK", _("Pick up item ahead"), Common::KeyState(Common::KEYCODE_g, 'g'), "g", "");
+	addKeymapAction(keyMap, "NOTE", _("Edit map note (while map open)"), Common::KeyState(Common::KEYCODE_n, 'n'), "n", "");
 	addKeymapAction(keyMap, "INV", _("Open / Close inventory"), Common::KeyState(Common::KEYCODE_i, 'i'), "i", "JOY_X");
 	addKeymapAction(keyMap, "SCE", _("Switch inventory / Character screen"), Common::KeyState(Common::KEYCODE_p, 'p'), "p", "JOY_Y");
 	addKeymapAction(keyMap, "CMP", _("Camp"), Common::KeyState(Common::KEYCODE_c, 'c'), "c", "");
@@ -403,6 +407,16 @@ Common::KeymapArray EoBCoreEngine::initKeymaps(const Common::String &gameId) {
 	addKeymapAction(keyMap, "SL5", _("Spell level 5"), Common::KeyState(Common::KEYCODE_5, '5'), "5", "");
 	if (gameId == "eob2")
 		addKeymapAction(keyMap, "SL6", _("Spell level 6"), Common::KeyState(Common::KEYCODE_6, '6'), "6", "");
+
+	// Non-original: Shift+1..6 attack with the matching party member's off hand.
+	// The injected event keeps the Shift flag, so checkInput() tags it with 0x100
+	// and the main loop can tell it apart from a plain digit (primary-hand attack).
+	addKeymapAction(keyMap, "AT1B", _("Attack 1 (off hand)"), Common::KeyState(Common::KEYCODE_1, '1', Common::KBD_SHIFT), "S+1", "");
+	addKeymapAction(keyMap, "AT2B", _("Attack 2 (off hand)"), Common::KeyState(Common::KEYCODE_2, '2', Common::KBD_SHIFT), "S+2", "");
+	addKeymapAction(keyMap, "AT3B", _("Attack 3 (off hand)"), Common::KeyState(Common::KEYCODE_3, '3', Common::KBD_SHIFT), "S+3", "");
+	addKeymapAction(keyMap, "AT4B", _("Attack 4 (off hand)"), Common::KeyState(Common::KEYCODE_4, '4', Common::KBD_SHIFT), "S+4", "");
+	addKeymapAction(keyMap, "AT5B", _("Attack 5 (off hand)"), Common::KeyState(Common::KEYCODE_5, '5', Common::KBD_SHIFT), "S+5", "");
+	addKeymapAction(keyMap, "AT6B", _("Attack 6 (off hand)"), Common::KeyState(Common::KEYCODE_6, '6', Common::KBD_SHIFT), "S+6", "");
 
 	return Common::Keymap::arrayOf(keyMap);
 }
@@ -775,11 +789,65 @@ void EoBCoreEngine::runLoop() {
 	while (!shouldQuit() && _runFlag) {
 		uint32 frameEnd = _system->getMillis() + 8;
 		checkPartyStatus(true);
-		int inputFlag = checkInput(_activeButtons, true, 0);
+		// While the map overlay is up, clicks belong to the map (cell selection),
+		// not the play-field buttons under it - so suppress the button list then.
+		int inputFlag = checkInput(_automapVisible ? 0 : _activeButtons, true, 0);
 		removeInputTop();
 
 		if (inputFlag && inputFlag == _keyMap[Common::KEYCODE_TAB]) {
 			automapToggle();
+		} else if (_automapVisible && inputFlag == 199) {
+			automapHandleClick();
+		} else if (_automapVisible && inputFlag && inputFlag == _keyMap[Common::KEYCODE_n]) {
+			automapEditNote();
+		} else if (_automapVisible && inputFlag &&
+		           (inputFlag == _keyMap[Common::KEYCODE_UP] || inputFlag == _keyMap[Common::KEYCODE_DOWN] ||
+		            inputFlag == _keyMap[Common::KEYCODE_LEFT] || inputFlag == _keyMap[Common::KEYCODE_RIGHT] ||
+		            inputFlag == _keyMap[Common::KEYCODE_HOME] || inputFlag == _keyMap[Common::KEYCODE_PAGEUP])) {
+			// The play-field buttons are suppressed while the map is up (so a map
+			// click does not fall through to a button under it), which also blocks
+			// the normal keyboard movement path. Dispatch the movement/turn keys to
+			// their handlers directly here so the party can still be walked and
+			// turned with the map open. A throwaway Button is fine: the handlers only
+			// read button->index (for their return value, which we ignore).
+			Button dummy;
+			if (inputFlag == _keyMap[Common::KEYCODE_UP])
+				clickedUpArrow(&dummy);
+			else if (inputFlag == _keyMap[Common::KEYCODE_DOWN])
+				clickedDownArrow(&dummy);
+			else if (inputFlag == _keyMap[Common::KEYCODE_LEFT])
+				clickedLeftArrow(&dummy);
+			else if (inputFlag == _keyMap[Common::KEYCODE_RIGHT])
+				clickedRightArrow(&dummy);
+			else if (inputFlag == _keyMap[Common::KEYCODE_HOME])
+				clickedTurnLeftArrow(&dummy);
+			else
+				clickedTurnRightArrow(&dummy);
+		} else if (_updateFlags && inputFlag && inputFlag == _keyMap[Common::KEYCODE_RETURN]) {
+			// Spellbook is open (_updateFlags): Enter casts the currently highlighted
+			// spell - the same path a mouse click on that entry takes - and then shuts
+			// the book, so a spell can be picked and fired without the mouse. The book
+			// is only closed when a spell was actually castable; if nothing is
+			// selectable (empty level, or the slot is still on cooldown) the book
+			// stays open so Enter never dismisses it without doing anything.
+			const int sel = _openBookSpellSelectedItem;
+			const bool castable = (sel >= 0 && sel < 6 && (_openBookSpellListOffset + sel) < 9 &&
+			    _openBookAvailableSpells[_openBookSpellLevel * 10 + _openBookSpellListOffset + sel] > 0 &&
+			    !(_characters[_openBookChar].disabledSlots & 4));
+			if (castable) {
+				gui_drawSpellbook();
+				int s = _openBookAvailableSpells[_openBookSpellLevel * 10 + _openBookSpellListOffset + sel];
+				if (_openBookType == 1)
+					s += _clericSpellOffset;
+				castSpell(s, 0);
+				// Casting normally leaves the book up for a moment (a cooldown); close
+				// it now if it is still open and the cast did not move us into a target
+				// dialogue that already changed the control mode.
+				if (_updateFlags) {
+					Button b;
+					clickedSpellbookAbort(&b);
+				}
+			}
 		} else if (inputFlag && inputFlag == _keyMap[Common::KEYCODE_f]) {
 			gui_interactAhead();
 		} else if (inputFlag && inputFlag == _keyMap[Common::KEYCODE_g]) {
@@ -809,14 +877,20 @@ void EoBCoreEngine::runLoop() {
 		updateScriptTimers();
 		updateWallOfForceTimers();
 
+		bool sceneRedraw = _sceneUpdateRequired && !_sceneShakeCountdown;
+		// Whenever the view changes (a step or a turn), record the blocks now within
+		// line of sight as "seen" so they appear (dimmed) on the automap.
+		if (sceneRedraw)
+			automapMarkSeenFromCurrent();
+
 		if (_automapVisible) {
 			// Keep the live dungeon view updating behind the map: the overlay is a
 			// persistent separate layer, so redrawing the scene under it (on
 			// movement) doesn't disturb the map and shows through its transparency.
-			if (_sceneUpdateRequired && !_sceneShakeCountdown)
+			if (sceneRedraw)
 				drawScene(1);
 			automapDraw();
-		} else if (_sceneUpdateRequired && !_sceneShakeCountdown) {
+		} else if (sceneRedraw) {
 			drawScene(1);
 		}
 

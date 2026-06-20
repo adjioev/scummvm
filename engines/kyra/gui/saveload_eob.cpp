@@ -280,11 +280,48 @@ Common::Error EoBCoreEngine::loadGameState(int slot) {
 		}
 	}
 
-	// Automap explored-block bitfield (non-original feature). Saves predating this
-	// feature have none, so clear it and only read when the save is new enough.
+	// Automap bitfields (non-original feature). Saves predating each field have
+	// none, so clear first and only read when the save is new enough.
 	memset(_automapVisited, 0, sizeof(_automapVisited));
+	memset(_automapSeen, 0, sizeof(_automapSeen));
 	if (header.version >= 25)
 		in.read(_automapVisited, sizeof(_automapVisited));
+	if (header.version >= 26)
+		in.read(_automapSeen, sizeof(_automapSeen));
+
+	_automapNotes.clear();
+	if (header.version >= 27) {
+		uint32 numNotes = in.readUint32BE();
+		for (uint32 i = 0; i < numNotes; ++i) {
+			uint32 k = in.readUint32BE();
+			uint16 len = in.readUint16BE();
+			Common::String s;
+			for (uint16 j = 0; j < len; ++j)
+				s += (char)in.readByte();
+			_automapNotes[k] = s;
+		}
+	}
+
+	// Auto-collected per-cell info (save version >= 28): a glyph map (key/icon) and
+	// a description map (key/length/bytes), each preceded by its entry count.
+	_automapIcons.clear();
+	_automapAutoInfo.clear();
+	if (header.version >= 28) {
+		uint32 numIcons = in.readUint32BE();
+		for (uint32 i = 0; i < numIcons; ++i) {
+			uint32 k = in.readUint32BE();
+			_automapIcons[k] = in.readByte();
+		}
+		uint32 numInfo = in.readUint32BE();
+		for (uint32 i = 0; i < numInfo; ++i) {
+			uint32 k = in.readUint32BE();
+			uint16 len = in.readUint16BE();
+			Common::String s;
+			for (uint16 j = 0; j < len; ++j)
+				s += (char)in.readByte();
+			_automapAutoInfo[k] = s;
+		}
+	}
 
 	loadLevel(_currentLevel, _currentSub);
 	if (_flags.platform == Common::kPlatformFMTowns && _gameToLoad != -1)
@@ -544,8 +581,32 @@ Common::Error EoBCoreEngine::saveGameStateIntern(int slot, const char *saveName,
 		}
 	}
 
-	// Automap explored-block bitfield (non-original feature), one bitfield per level.
+	// Automap explored-block bitfield (non-original feature), one bitfield per
+	// level, followed by the "seen but not visited" bitfield (save version >= 26).
 	out->write(_automapVisited, sizeof(_automapVisited));
+	out->write(_automapSeen, sizeof(_automapSeen));
+
+	// Per-cell map notes (save version >= 27): count, then key/length/bytes each.
+	out->writeUint32BE(_automapNotes.size());
+	for (Common::HashMap<uint32, Common::String>::const_iterator it = _automapNotes.begin(); it != _automapNotes.end(); ++it) {
+		out->writeUint32BE(it->_key);
+		out->writeUint16BE(it->_value.size());
+		out->write(it->_value.c_str(), it->_value.size());
+	}
+
+	// Auto-collected per-cell info (save version >= 28): glyph map then description
+	// map, each as a count followed by its entries.
+	out->writeUint32BE(_automapIcons.size());
+	for (Common::HashMap<uint32, uint8>::const_iterator it = _automapIcons.begin(); it != _automapIcons.end(); ++it) {
+		out->writeUint32BE(it->_key);
+		out->writeByte(it->_value);
+	}
+	out->writeUint32BE(_automapAutoInfo.size());
+	for (Common::HashMap<uint32, Common::String>::const_iterator it = _automapAutoInfo.begin(); it != _automapAutoInfo.end(); ++it) {
+		out->writeUint32BE(it->_key);
+		out->writeUint16BE(it->_value.size());
+		out->write(it->_value.c_str(), it->_value.size());
+	}
 
 	out->finalize();
 

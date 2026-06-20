@@ -1121,6 +1121,20 @@ int EoBCoreEngine::clickedSpellbookTab(Button *button) {
 	return button->index;
 }
 
+void EoBCoreEngine::gui_spellbookNavigate(int direction) {
+	// Move the spellbook's highlight to the previous/next available spell using the
+	// book's own list-navigation - the exact path the on-screen scroll buttons
+	// drive (arg 6 = "move selection"), where _progress 1 means up and 2 means down.
+	// Lets the arrow keys pick a spell to cast while the book is open.
+	if (!_updateFlags)
+		return;
+	Button b;
+	b.arg = 6;
+	_gui->_progress = (direction < 0) ? 1 : 2;
+	clickedSpellbookList(&b);
+	_gui->_progress = 0;
+}
+
 int EoBCoreEngine::clickedSpellbookList(Button *button) {
 	int listIndex = button->arg;
 	bool spellLevelAvailable = false;
@@ -1244,6 +1258,13 @@ int EoBCoreEngine::clickedPortraitRestore(Button *button) {
 }
 
 int EoBCoreEngine::clickedUpArrow(Button *button) {
+	// While the spellbook is open (but not behind the automap, which has its own
+	// keyboard movement), the arrow keys pick a spell instead of walking the party.
+	if (_updateFlags && !_automapVisible) {
+		gui_spellbookNavigate(-1);
+		return button->index;
+	}
+
 	int b = calcNewBlockPositionAndTestPassability(_currentBlock, _currentDirection);
 
 	if (b == -1) {
@@ -1258,6 +1279,11 @@ int EoBCoreEngine::clickedUpArrow(Button *button) {
 }
 
 int EoBCoreEngine::clickedDownArrow(Button *button) {
+	if (_updateFlags && !_automapVisible) {
+		gui_spellbookNavigate(1);
+		return button->index;
+	}
+
 	int b = calcNewBlockPositionAndTestPassability(_currentBlock, (_currentDirection + 2) & 3);
 
 	if (b == -1) {
@@ -1272,6 +1298,11 @@ int EoBCoreEngine::clickedDownArrow(Button *button) {
 }
 
 int EoBCoreEngine::clickedLeftArrow(Button *button) {
+	if (_updateFlags && !_automapVisible) {
+		gui_spellbookNavigate(-1);
+		return button->index;
+	}
+
 	int b = calcNewBlockPositionAndTestPassability(_currentBlock, (_currentDirection - 1) & 3);
 
 	if (b == -1) {
@@ -1286,6 +1317,11 @@ int EoBCoreEngine::clickedLeftArrow(Button *button) {
 }
 
 int EoBCoreEngine::clickedRightArrow(Button *button) {
+	if (_updateFlags && !_automapVisible) {
+		gui_spellbookNavigate(1);
+		return button->index;
+	}
+
 	int b = calcNewBlockPositionAndTestPassability(_currentBlock, (_currentDirection + 1) & 3);
 
 	if (b == -1) {
@@ -5036,12 +5072,196 @@ bool EoBCoreEngine::automapIsVisited(uint16 block) const {
 	return (_automapVisited[_currentLevel][block >> 3] & (1 << (block & 7))) != 0;
 }
 
+void EoBCoreEngine::automapMarkSeen(uint16 block) {
+	if (_currentLevel >= 20 || block >= 1024)
+		return;
+	_automapSeen[_currentLevel][block >> 3] |= (1 << (block & 7));
+}
+
+bool EoBCoreEngine::automapIsSeen(uint16 block) const {
+	if (_currentLevel >= 20 || block >= 1024)
+		return false;
+	return (_automapSeen[_currentLevel][block >> 3] & (1 << (block & 7))) != 0;
+}
+
+void EoBCoreEngine::automapMarkSeenFromCurrent() {
+	// March straight along the facing direction, marking each block in the direct
+	// line of sight until a wall blocks the view (the dungeon view shows about
+	// three blocks deep). Only the cells dead ahead are recorded, so the map stays
+	// a clean sight line instead of a scatter of glimpsed side cells.
+	const int dir = _currentDirection;
+	uint16 block = _currentBlock;
+	for (int depth = 1; depth <= 2; ++depth) {
+		// Same passability test as movement and wall drawing: the neighbour's
+		// facing wall (walls[dir ^ 2]). Stop as soon as the view is blocked.
+		const uint16 nb = calcNewBlockPosition(block, dir);
+		if (!(_wllWallFlags[_levelBlockProperties[nb].walls[dir ^ 2]] & 1))
+			break;
+		block = nb;
+		automapMarkSeen(block);
+	}
+}
+
+// Defined further down; declared here so the icon drawing below can use it.
+static void automapFillTri(Graphics::Surface &s, int ax, int ay, int bx, int by, int cx, int cy, uint32 color);
+
+// Build a live, comma-separated list of the item names lying on `block` of the
+// current level. Read straight from the level data so it is always accurate (an
+// item picked up vanishes from the list); the automap only ever shows the current
+// level, so _levelBlockProperties is the right level. Returns "" if the cell is
+// empty.
+Common::String EoBCoreEngine::automapLiveItems(uint16 block) const {
+	if (block >= 1024)
+		return Common::String();
+	Common::String out;
+	const uint16 head = _levelBlockProperties[block].drawObjects;
+	uint16 o = head;
+	int guard = 0;
+	while (o && guard++ < 64) {
+		const EoBItem *it = &_items[o];
+		const char *nm = _itemNames[it->nameUnid];
+		if (nm && *nm) {
+			if (!out.empty())
+				out += ", ";
+			out += nm;
+		}
+		o = it->next;
+		if (o == head) // the floor list is circular
+			break;
+	}
+	return out;
+}
+
+// When the party arrives on a cell, note anything the game can work out by itself:
+// a teleporter pad (a wall carrying the teleporter wall id). Stairs and level
+// destinations are not known here - they are tagged in automapTagTransition when a
+// script actually moves us. Items are read live, not stored.
+void EoBCoreEngine::automapCollectCellInfo(uint16 block) {
+	if (_currentLevel >= 20 || block >= 1024)
+		return;
+	const uint32 k = automapNoteKey(block);
+	if (_automapIcons.contains(k)) // already classified (e.g. as stairs)
+		return;
+	for (int d = 0; d < 4; ++d) {
+		if (_levelBlockProperties[block].walls[d] == _teleporterWallId) {
+			_automapIcons[k] = kAmTeleport;
+			if (!_automapAutoInfo.contains(k))
+				_automapAutoInfo[k] = "Teleporter";
+			break;
+		}
+	}
+}
+
+// A script just moved the party from (fromLevel, fromBlock) to another level.
+// Tag the cell we left with a stairs/teleport glyph and a learned description -
+// deeper level number reads as "down", a lower one as "up", same level as a plain
+// teleport. This is how the map learns where each exit goes, by observation.
+void EoBCoreEngine::automapTagTransition(int fromLevel, uint16 fromBlock, int toLevel) {
+	if (fromLevel < 0 || fromLevel >= 20 || fromBlock >= 1024)
+		return;
+	const uint32 k = ((uint32)fromLevel << 16) | fromBlock;
+	uint8 icon;
+	Common::String info;
+	if (toLevel > fromLevel) {
+		icon = kAmStairsDown;
+		info = Common::String::format("Down to level %d", toLevel);
+	} else if (toLevel < fromLevel) {
+		icon = kAmStairsUp;
+		info = Common::String::format("Up to level %d", toLevel);
+	} else {
+		icon = kAmTeleport;
+		info = Common::String::format("Teleport to level %d", toLevel);
+	}
+	_automapIcons[k] = icon;
+	_automapAutoInfo[k] = info;
+}
+
+// Draw a small glyph for a cell's auto-classified role, centered in the cell:
+// stairs down (a filled down-chevron), stairs up (an up-chevron), or a teleporter
+// (a small ring). Kept tiny and bright so it reads on top of the floor fill.
+void EoBCoreEngine::automapDrawIcon(Graphics::Surface &surf, int sx, int sy, int cell, uint8 icon, uint32 color) const {
+	const int cx = sx + cell / 2;
+	const int cy = sy + cell / 2;
+	const int r = MAX(2, cell / 3);
+	switch (icon) {
+	case kAmStairsDown:
+		automapFillTri(surf, cx - r, cy - r, cx + r, cy - r, cx, cy + r, color);
+		break;
+	case kAmStairsUp:
+		automapFillTri(surf, cx - r, cy + r, cx + r, cy + r, cx, cy - r, color);
+		break;
+	case kAmTeleport:
+		surf.frameRect(Common::Rect(cx - r, cy - r, cx + r, cy + r), color);
+		surf.frameRect(Common::Rect(cx - r + 1, cy - r + 1, cx + r - 1, cy + r - 1), color);
+		break;
+	default:
+		break;
+	}
+}
+
+// Draw text scaled up by an integer factor, centered in [x, x+w) at top `y`.
+// The built-in fonts are a fixed pixel size, which looks tiny on the high-res
+// overlay, so render once at native size into a scratch surface and then
+// nearest-neighbour upscale the inked pixels into a chunky, legible label.
+static void automapDrawBigString(Graphics::Surface &dst, const Graphics::Font *font,
+		const Common::String &text, int x, int y, int w, uint32 color, int scale) {
+	if (!font || text.empty() || scale < 1)
+		return;
+	const int tw = font->getStringWidth(text);
+	const int th = font->getFontHeight();
+	if (tw <= 0 || th <= 0)
+		return;
+
+	if (scale == 1) {
+		font->drawString(&dst, text, x, y, w, color, Graphics::kTextAlignCenter);
+		return;
+	}
+
+	// The overlay format may be 16- or 32-bit, so read pixels by their byte width
+	// rather than assuming a type.
+	const int bpp = dst.format.bytesPerPixel;
+	if (bpp != 2 && bpp != 4) { // unexpected depth: fall back to native size
+		font->drawString(&dst, text, x, y, w, color, Graphics::kTextAlignCenter);
+		return;
+	}
+
+	// Render the string opaque over a fully transparent (zero) background, so the
+	// background pixels are distinguishable from inked ones when we upscale.
+	Graphics::Surface tmp;
+	tmp.create(tw, th, dst.format);
+	tmp.fillRect(Common::Rect(0, 0, tw, th), 0);
+	font->drawString(&tmp, text, 0, 0, tw, color, Graphics::kTextAlignLeft);
+
+	const int dw = tw * scale;
+	int dx = x + (w - dw) / 2;
+	if (dx < x)
+		dx = x;
+	for (int sy = 0; sy < th; ++sy) {
+		const byte *src = (const byte *)tmp.getBasePtr(0, sy);
+		for (int sx = 0; sx < tw; ++sx) {
+			const uint32 c = (bpp == 2) ? ((const uint16 *)src)[sx] : ((const uint32 *)src)[sx];
+			if (c == 0) // transparent background pixel
+				continue;
+			const int px = dx + sx * scale;
+			const int py = y + sy * scale;
+			dst.fillRect(Common::Rect(px, py, px + scale, py + scale), c);
+		}
+	}
+	tmp.free();
+}
+
 void EoBCoreEngine::automapToggle() {
 	_automapVisible = !_automapVisible;
 	if (_automapVisible) {
-		// Show the high-resolution overlay layer (inGUI=false keeps the game loop
-		// running underneath); the map is drawn into it every frame.
-		_system->showOverlay(false);
+		// Start with the party's cell selected so its note (if any) shows at once.
+		_automapSelectedBlock = _currentBlock;
+		// Show the high-resolution overlay layer. inGUI=true switches the input
+		// active area to overlay coordinates, so getMousePos() lands in the same
+		// space the map is drawn in and clicks hit-test the right cell. It does not
+		// stop our runLoop, which keeps driving the game underneath; the map is
+		// drawn into the overlay every frame and the scene shows through its
+		// transparency.
+		_system->showOverlay(true);
 	} else {
 		_system->hideOverlay();
 		// Force the dungeon view to be redrawn now that the overlay is gone.
@@ -5070,6 +5290,102 @@ static void automapFillTri(Graphics::Surface &s, int ax, int ay, int bx, int by,
 	}
 }
 
+// Single source of truth for the map's on-overlay geometry, shared by drawing
+// and by mouse-click hit-testing so a click lands on the cell that was drawn.
+EoBCoreEngine::AutomapLayout EoBCoreEngine::automapLayout() const {
+	const int ow = _system->getOverlayWidth();
+	const int oh = _system->getOverlayHeight();
+	AutomapLayout l;
+	l.cell = MIN((ow - ow / 12) / 32, (oh - oh / 12) / 32);
+	if (l.cell < 2)
+		l.cell = 2;
+	const int grid = l.cell * 32;
+	l.pad = MAX(6, l.cell);
+	l.titleH = MAX(14, oh / 22);
+	l.footerH = MAX(36, oh / 11); // strip below the grid: note line + auto-info line
+	l.panelW = grid + l.pad * 2;
+	l.panelH = grid + l.pad * 2 + l.titleH + l.footerH;
+	l.panelX = (ow - l.panelW) / 2;
+	l.panelY = (oh - l.panelH) / 2;
+	l.offX = l.panelX + l.pad;
+	l.offY = l.panelY + l.pad + l.titleH;
+	return l;
+}
+
+// Map a click (overlay coordinates) to a cell: select it and, if it has been
+// explored, open the note editor for it straight away so a click is all it takes
+// to jot a note (the 'n' key does the same for the already-selected cell).
+void EoBCoreEngine::automapHandleClick() {
+	const Common::Point p = _eventMan->getMousePos();
+	const AutomapLayout l = automapLayout();
+	if (p.x < l.offX || p.y < l.offY)
+		return;
+	const int bx = (p.x - l.offX) / l.cell;
+	const int by = (p.y - l.offY) / l.cell;
+	if (bx < 0 || bx >= 32 || by < 0 || by >= 32)
+		return;
+	const uint16 block = (by << 5) | bx;
+	if (automapIsVisited(block) || automapIsSeen(block)) {
+		_automapSelectedBlock = block;
+		automapEditNote();
+	}
+}
+
+// Tiny on-overlay text editor for the selected cell's note. Disables the game
+// keymap so letters arrive as raw ASCII (the same trick GUI_EoB::getTextInput
+// uses), redraws the map each frame to show the live buffer, and writes the note
+// on Enter (an empty note deletes it); Esc cancels.
+void EoBCoreEngine::automapEditNote() {
+	uint16 block = (_automapSelectedBlock != 0xFFFF) ? _automapSelectedBlock : _currentBlock;
+	if (!(automapIsVisited(block) || automapIsSeen(block)))
+		return;
+	_automapSelectedBlock = block;
+
+	Common::Keymap *km = _eventMan->getKeymapper()->getKeymap(kKeymapName);
+	km->setEnabled(false);
+
+	const uint32 key = automapNoteKey(block);
+	_automapEditBuffer = _automapNotes.contains(key) ? _automapNotes[key] : Common::String();
+	_automapEditing = true;
+
+	const uint kMaxLen = 40;
+	bool done = false, cancel = false;
+	while (!done && !shouldQuit()) {
+		automapDraw();
+		updateInput();
+		for (Common::List<KyraEngine_v1::Event>::const_iterator e = _eventList.begin(); e != _eventList.end(); ++e) {
+			if (e->event.type != Common::EVENT_KEYDOWN)
+				continue;
+			const Common::KeyCode kc = e->event.kbd.keycode;
+			const uint16 asc = e->event.kbd.ascii;
+			if (kc == Common::KEYCODE_RETURN || kc == Common::KEYCODE_KP_ENTER)
+				done = true;
+			else if (kc == Common::KEYCODE_ESCAPE)
+				done = cancel = true;
+			else if (kc == Common::KEYCODE_BACKSPACE) {
+				if (!_automapEditBuffer.empty())
+					_automapEditBuffer.deleteLastChar();
+			} else if (asc >= 32 && asc < 127 && _automapEditBuffer.size() < kMaxLen) {
+				_automapEditBuffer += (char)asc;
+			}
+		}
+		_eventList.clear();
+		_system->delayMillis(12);
+	}
+
+	if (!cancel) {
+		_automapEditBuffer.trim();
+		if (_automapEditBuffer.empty())
+			_automapNotes.erase(key);
+		else
+			_automapNotes[key] = _automapEditBuffer;
+	}
+
+	_automapEditing = false;
+	_automapEditBuffer.clear();
+	km->setEnabled(true);
+}
+
 void EoBCoreEngine::automapDraw() {
 	automapMarkVisited(_currentBlock);
 
@@ -5095,28 +5411,31 @@ void EoBCoreEngine::automapDraw() {
 	// are intentionally translucent.
 	const uint32 cGrid      = fmt.ARGBToColor(255, 40,  66,  84); // faint grid over floor
 	const uint32 cFloor     = fmt.ARGBToColor(255, 26,  46,  60); // explored floor fill
-	const uint32 cWallGlow  = fmt.ARGBToColor(255, 48, 104, 140); // soft halo behind walls
-	const uint32 cWall      = fmt.ARGBToColor(255,170, 235, 255); // crisp wall core line
+	const uint32 cFloorSeen = fmt.ARGBToColor(255, 18,  28,  36); // glimpsed-only floor (dimmer)
+	const uint32 cWallSeen  = fmt.ARGBToColor(255, 72, 104, 126); // glimpsed-only wall (dim, no glow)
+	const uint32 cWallGlow  = fmt.ARGBToColor(255, 38,  78, 104); // soft halo behind walls
+	const uint32 cWall      = fmt.ARGBToColor(255,108, 158, 188); // crisp wall core line
 	const uint32 cPartyGlow = fmt.ARGBToColor(255,190,  90,  40); // halo behind party arrow
 	const uint32 cParty     = fmt.ARGBToColor(255,255, 210,  90); // party arrow
 	const uint32 cTitle     = fmt.ARGBToColor(255,140, 200, 235); // header text
+	const uint32 cNote      = fmt.ARGBToColor(255,255, 196,  70); // marker on cells with a note
+	const uint32 cIcon      = fmt.ARGBToColor(255,120, 240, 180); // stairs/teleporter glyph
+	const uint32 cSelect    = fmt.ARGBToColor(255,255, 240, 170); // selected-cell highlight frame
+	const uint32 cFooter    = fmt.ARGBToColor(255,210, 224, 236); // footer note text
+	const uint32 cFooterDim = fmt.ARGBToColor(255, 90, 116, 140); // footer hint text
 
 	// Fixed grid: the whole 32x32 level is centered at a constant scale, so the
 	// map never rescales or jumps as new areas are explored.
-	int cell = MIN((ow - ow / 12) / 32, (oh - oh / 12) / 32);
-	if (cell < 2)
-		cell = 2;
-	const int grid = cell * 32;
-	const int pad = MAX(6, cell);
-	const int titleH = MAX(14, oh / 22);
-
-	// Centered panel sized to wrap the grid plus padding and a title strip.
-	const int panelW = grid + pad * 2;
-	const int panelH = grid + pad * 2 + titleH;
-	const int panelX = (ow - panelW) / 2;
-	const int panelY = (oh - panelH) / 2;
-	const int offX = panelX + pad;
-	const int offY = panelY + pad + titleH;
+	const AutomapLayout L = automapLayout();
+	const int cell = L.cell;
+	const int pad = L.pad;
+	const int titleH = L.titleH;
+	const int panelW = L.panelW;
+	const int panelH = L.panelH;
+	const int panelX = L.panelX;
+	const int panelY = L.panelY;
+	const int offX = L.offX;
+	const int offY = L.offY;
 
 	const int wt = MAX(1, cell / 6); // wall bar thickness
 	const int hw = MAX(2, wt + cell / 8); // wall halo thickness
@@ -5146,38 +5465,87 @@ void EoBCoreEngine::automapDraw() {
 	for (int by = 0; by < 32; ++by) {
 		for (int bx = 0; bx < 32; ++bx) {
 			const uint16 block = (by << 5) | bx;
-			if (!automapIsVisited(block))
+			const bool visited = automapIsVisited(block);
+			// Glimpsed-only blocks (seen down a corridor but never walked) draw in a
+			// dimmer, flatter style so they read as "saw it, didn't go there".
+			const bool seen = !visited && automapIsSeen(block);
+			if (!visited && !seen)
 				continue;
 
 			const int sx = offX + bx * cell;
 			const int sy = offY + by * cell;
-			const LevelBlockProperty *p = &_levelBlockProperties[block];
 
-			// Solid floor; adjacent explored cells merge into continuous corridors.
-			surf.fillRect(Common::Rect(sx, sy, sx + cell, sy + cell), cFloor);
-			// Faint inner grid so individual tiles are still legible.
-			surf.hLine(sx, sy, sx + cell - 1, cGrid);
-			surf.vLine(sx, sy, sy + cell - 1, cGrid);
+			// A side is a wall only if the party cannot step that way - the same test
+			// movement uses (the neighbour's facing wall, walls[dir ^ 2]), not this
+			// block's own wall shape. Using the block's own walls[] drew a full box
+			// around open forest cells, whose walls[] hold tree decorations on every
+			// side even where you can walk through.
+			bool wall[4];
+			for (int d = 0; d < 4; ++d) {
+				const uint16 nb = calcNewBlockPosition(block, d);
+				wall[d] = !(_wllWallFlags[_levelBlockProperties[nb].walls[d ^ 2]] & 1);
+			}
 
-			// Walls: a soft halo first, then a crisp core line on top, so impassable
-			// sides "glow". Same bit moveParty() tests, so open doors show as gaps.
-			if (!(_wllWallFlags[p->walls[0]] & 1)) { // north
-				surf.fillRect(Common::Rect(sx, sy, sx + cell, sy + hw), cWallGlow);
-				surf.fillRect(Common::Rect(sx, sy, sx + cell, sy + wt), cWall);
+			if (visited) {
+				// Solid floor; adjacent explored cells merge into continuous corridors.
+				surf.fillRect(Common::Rect(sx, sy, sx + cell, sy + cell), cFloor);
+				// Faint inner grid so individual tiles are still legible.
+				surf.hLine(sx, sy, sx + cell - 1, cGrid);
+				surf.vLine(sx, sy, sy + cell - 1, cGrid);
+
+				// Walls: a soft halo first, then a crisp core line on top, so impassable
+				// sides "glow". Open doors are passable, so they show up as gaps.
+				if (wall[0]) { // north
+					surf.fillRect(Common::Rect(sx, sy, sx + cell, sy + hw), cWallGlow);
+					surf.fillRect(Common::Rect(sx, sy, sx + cell, sy + wt), cWall);
+				}
+				if (wall[1]) { // east
+					surf.fillRect(Common::Rect(sx + cell - hw, sy, sx + cell, sy + cell), cWallGlow);
+					surf.fillRect(Common::Rect(sx + cell - wt, sy, sx + cell, sy + cell), cWall);
+				}
+				if (wall[2]) { // south
+					surf.fillRect(Common::Rect(sx, sy + cell - hw, sx + cell, sy + cell), cWallGlow);
+					surf.fillRect(Common::Rect(sx, sy + cell - wt, sx + cell, sy + cell), cWall);
+				}
+				if (wall[3]) { // west
+					surf.fillRect(Common::Rect(sx, sy, sx + hw, sy + cell), cWallGlow);
+					surf.fillRect(Common::Rect(sx, sy, sx + wt, sy + cell), cWall);
+				}
+			} else {
+				// Seen-only: dim floor plus thin dim wall outlines (no glow, no grid) so
+				// the glimpsed area shows the same structure as walked cells, just
+				// muted - bright walls mean "walked", dim walls mean "only saw it".
+				surf.fillRect(Common::Rect(sx, sy, sx + cell, sy + cell), cFloorSeen);
+				if (wall[0]) // north
+					surf.fillRect(Common::Rect(sx, sy, sx + cell, sy + wt), cWallSeen);
+				if (wall[1]) // east
+					surf.fillRect(Common::Rect(sx + cell - wt, sy, sx + cell, sy + cell), cWallSeen);
+				if (wall[2]) // south
+					surf.fillRect(Common::Rect(sx, sy + cell - wt, sx + cell, sy + cell), cWallSeen);
+				if (wall[3]) // west
+					surf.fillRect(Common::Rect(sx, sy, sx + wt, sy + cell), cWallSeen);
 			}
-			if (!(_wllWallFlags[p->walls[1]] & 1)) { // east
-				surf.fillRect(Common::Rect(sx + cell - hw, sy, sx + cell, sy + cell), cWallGlow);
-				surf.fillRect(Common::Rect(sx + cell - wt, sy, sx + cell, sy + cell), cWall);
-			}
-			if (!(_wllWallFlags[p->walls[2]] & 1)) { // south
-				surf.fillRect(Common::Rect(sx, sy + cell - hw, sx + cell, sy + cell), cWallGlow);
-				surf.fillRect(Common::Rect(sx, sy + cell - wt, sx + cell, sy + cell), cWall);
-			}
-			if (!(_wllWallFlags[p->walls[3]] & 1)) { // west
-				surf.fillRect(Common::Rect(sx, sy, sx + hw, sy + cell), cWallGlow);
-				surf.fillRect(Common::Rect(sx, sy, sx + wt, sy + cell), cWall);
+
+			// Auto-classified glyph (stairs/teleporter), if the game tagged this cell.
+			const uint32 bkey = automapNoteKey(block);
+			if (_automapIcons.contains(bkey))
+				automapDrawIcon(surf, sx, sy, cell, _automapIcons[bkey], visited ? cIcon : cWallSeen);
+
+			// Note marker: a small dot in the top-right corner of cells that carry a
+			// note, so they are spottable at a glance.
+			if (_automapNotes.contains(bkey)) {
+				const int ds = MAX(2, cell / 3);
+				surf.fillRect(Common::Rect(sx + cell - ds, sy, sx + cell, sy + ds), cNote);
 			}
 		}
+	}
+
+	// Selected cell: a bright double frame on top of everything else.
+	if (_automapSelectedBlock != 0xFFFF) {
+		const int sx = offX + (_automapSelectedBlock & 0x1F) * cell;
+		const int sy = offY + (_automapSelectedBlock >> 5) * cell;
+		surf.frameRect(Common::Rect(sx, sy, sx + cell, sy + cell), cSelect);
+		surf.frameRect(Common::Rect(sx + 1, sy + 1, sx + cell - 1, sy + cell - 1), cSelect);
 	}
 
 	// Party: a triangular arrow pointing the way the party faces, over a soft halo.
@@ -5201,6 +5569,59 @@ void EoBCoreEngine::automapDraw() {
 		tipX + (gx - tipX) / 4, tipY + (gy - tipY) / 4,
 		l1X + (gx - l1X) / 4, l1Y + (gy - l1Y) / 4,
 		l2X + (gx - l2X) / 4, l2Y + (gy - l2Y) / 4, cParty);
+
+	// Footer strip: a separator rule, then two stacked lines for the selected cell -
+	// the manual note (bright) on top, and the game's own auto-info plus any items
+	// lying there (dim) below.
+	const int footerY = panelY + panelH - L.footerH;
+	surf.hLine(panelX + pad, footerY, panelX + panelW - pad, cFrameDim);
+	if (const Graphics::Font *ffont = FontMan.getFontByUsage(Graphics::FontManager::kBigGUIFont)) {
+		const int fh = ffont->getFontHeight();
+		const int avail = panelW - 2 * pad;
+		const int rowH = L.footerH / 2;
+		const uint32 selKey = (_automapSelectedBlock != 0xFFFF) ? automapNoteKey(_automapSelectedBlock) : 0;
+
+		// Centered scaled line within one row band, auto-fit to the panel width.
+		// Capped at 2x so the note stays a comfortable size instead of filling the
+		// whole strip. (A lambda would be cleaner, but this matches the file style.)
+		#define AM_DRAW_ROW(str, rowTop, col) do { \
+			int sc = MIN(2, MAX(1, (rowH - 4) / fh)); \
+			while (sc > 1 && ffont->getStringWidth(str) * sc > avail) --sc; \
+			automapDrawBigString(surf, ffont, str, panelX + pad, (rowTop) + (rowH - fh * sc) / 2, avail, col, sc); \
+		} while (0)
+
+		// Row 1: live edit buffer, the stored note, or a hint to add one.
+		Common::String line1;
+		uint32 col1 = cFooter;
+		if (_automapEditing) {
+			line1 = Common::String("Note: ") + _automapEditBuffer + "_";
+		} else if (_automapSelectedBlock != 0xFFFF) {
+			if (_automapNotes.contains(selKey)) {
+				line1 = _automapNotes[selKey];
+			} else {
+				line1 = "press N to add a note";
+				col1 = cFooterDim;
+			}
+		}
+		if (!line1.empty())
+			AM_DRAW_ROW(line1, footerY, col1);
+
+		// Row 2 (not while editing): auto-collected description + live floor items.
+		if (!_automapEditing && _automapSelectedBlock != 0xFFFF) {
+			Common::String line2;
+			if (_automapAutoInfo.contains(selKey))
+				line2 = _automapAutoInfo[selKey];
+			const Common::String items = automapLiveItems(_automapSelectedBlock);
+			if (!items.empty()) {
+				if (!line2.empty())
+					line2 += " - ";
+				line2 += items;
+			}
+			if (!line2.empty())
+				AM_DRAW_ROW(line2, footerY + rowH, cFooterDim);
+		}
+		#undef AM_DRAW_ROW
+	}
 
 	_system->copyRectToOverlay(surf.getPixels(), surf.pitch, 0, 0, ow, oh);
 	surf.free();
