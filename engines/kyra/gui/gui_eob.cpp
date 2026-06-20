@@ -5479,8 +5479,9 @@ void EoBCoreEngine::automapDraw() {
 	if (const Graphics::Font *font = FontMan.getFontByUsage(Graphics::FontManager::kBigGUIFont)) {
 		const uint16 cb = (_automapSelectedBlock != 0xFFFF) ? _automapSelectedBlock : _currentBlock;
 		Common::String title = Common::String::format("LEVEL %d    %d,%d", _currentLevel, cb & 0x1F, cb >> 5);
-		const int ty = panelY + (titleH + pad - font->getFontHeight()) / 2;
-		font->drawString(&surf, title, panelX, ty, panelW, cTitle, Graphics::kTextAlignCenter);
+		const int tSc = MAX(1, oh / 360); // scale with the overlay so it isn't tiny on high-DPI
+		const int ty = panelY + (titleH + pad - font->getFontHeight() * tSc) / 2;
+		automapDrawBigString(surf, font, title, panelX, ty, panelW, cTitle, tSc);
 	}
 	surf.hLine(panelX + pad, panelY + titleH + pad / 2, panelX + panelW - pad, cFrameDim);
 
@@ -5656,12 +5657,14 @@ void EoBCoreEngine::automapDraw() {
 		const int avail = panelW - 2 * pad;
 		const int rowH = L.footerH / 2;
 		const uint32 selKey = (_automapSelectedBlock != 0xFFFF) ? automapNoteKey(_automapSelectedBlock) : 0;
+		// Cap the text scale by the overlay height, not a flat 2x: on a high-DPI /
+		// Retina output the overlay is large, so the note may scale past 2x and still
+		// look the right physical size. At normal resolutions this stays 2x.
+		const int textScaleMax = MAX(2, oh / 280);
 
 		// Centered scaled line within one row band, auto-fit to the panel width.
-		// Capped at 2x so the note stays a comfortable size instead of filling the
-		// whole strip. (A lambda would be cleaner, but this matches the file style.)
 		#define AM_DRAW_ROW(str, rowTop, col) do { \
-			int sc = MIN(2, MAX(1, (rowH - 4) / fh)); \
+			int sc = MIN(textScaleMax, MAX(1, (rowH - 4) / fh)); \
 			while (sc > 1 && ffont->getStringWidth(str) * sc > avail) --sc; \
 			automapDrawBigString(surf, ffont, str, panelX + pad, (rowTop) + (rowH - fh * sc) / 2, avail, col, sc); \
 		} while (0)
@@ -5701,11 +5704,14 @@ void EoBCoreEngine::automapDraw() {
 		#undef AM_DRAW_ROW
 	}
 
-	// Legend strip along the very bottom: a small key of the map's symbols.
+	// Legend strip along the very bottom: a small key of the map's symbols. The
+	// label scale follows the overlay height so it stays legible on a high-DPI
+	// output instead of shrinking to a few pixels.
 	if (const Graphics::Font *lfont = FontMan.getFontByUsage(Graphics::FontManager::kGUIFont)) {
 		const int legendY = panelY + panelH - L.legendH;
 		const int lh = lfont->getFontHeight();
-		const int ty = legendY + (L.legendH - lh) / 2;
+		const int legSc = MAX(1, oh / 520);
+		const int ty = legendY + (L.legendH - lh * legSc) / 2;
 		const int gsz = MAX(4, L.legendH / 2);          // glyph swatch size
 		const int lgy = legendY + (L.legendH - gsz) / 2;
 		const int slotW = (panelW - 2 * pad) / 5;
@@ -5713,23 +5719,23 @@ void EoBCoreEngine::automapDraw() {
 		int lx = panelX + pad;
 		// Door (green leaf)
 		surf.fillRect(Common::Rect(lx, lgy + gsz / 3, lx + gsz, lgy + gsz - gsz / 3), cDoor);
-		lfont->drawString(&surf, "Door", lx + gsz + 3, ty, lw, cFooterDim, Graphics::kTextAlignLeft);
+		automapDrawBigString(surf, lfont, "Door", lx + gsz + 3, ty, lw, cFooterDim, legSc);
 		lx += slotW;
 		// Stairs (triangle)
 		automapFillTri(surf, lx, lgy + gsz, lx + gsz, lgy + gsz, lx + gsz / 2, lgy, cIcon);
-		lfont->drawString(&surf, "Stairs", lx + gsz + 3, ty, lw, cFooterDim, Graphics::kTextAlignLeft);
+		automapDrawBigString(surf, lfont, "Stairs", lx + gsz + 3, ty, lw, cFooterDim, legSc);
 		lx += slotW;
 		// Teleporter (ring)
 		surf.frameRect(Common::Rect(lx, lgy, lx + gsz, lgy + gsz), cIcon);
-		lfont->drawString(&surf, "Tele", lx + gsz + 3, ty, lw, cFooterDim, Graphics::kTextAlignLeft);
+		automapDrawBigString(surf, lfont, "Tele", lx + gsz + 3, ty, lw, cFooterDim, legSc);
 		lx += slotW;
 		// Switch / lever (magenta pip)
 		surf.fillRect(Common::Rect(lx, lgy, lx + gsz, lgy + gsz), cSwitch);
-		lfont->drawString(&surf, "Switch", lx + gsz + 3, ty, lw, cFooterDim, Graphics::kTextAlignLeft);
+		automapDrawBigString(surf, lfont, "Switch", lx + gsz + 3, ty, lw, cFooterDim, legSc);
 		lx += slotW;
 		// Note (amber dot)
 		surf.fillRect(Common::Rect(lx, lgy, lx + gsz, lgy + gsz), cNote);
-		lfont->drawString(&surf, "Note", lx + gsz + 3, ty, lw, cFooterDim, Graphics::kTextAlignLeft);
+		automapDrawBigString(surf, lfont, "Note", lx + gsz + 3, ty, lw, cFooterDim, legSc);
 	}
 
 	_system->copyRectToOverlay(surf.getPixels(), surf.pitch, 0, 0, ow, oh);
