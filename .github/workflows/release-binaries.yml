@@ -1,0 +1,134 @@
+name: Release binaries
+
+# Builds runnable ScummVM binaries for Linux, macOS and Windows so they can be
+# attached to a forum post or a GitHub Release. Builds the KYRA engine only
+# (Eye of the Beholder and the rest of the KYRA games) to keep the builds fast
+# and reliable - change ENGINES below to "--enable-all-engines" for a full build.
+#
+# Run it manually from the Actions tab ("Run workflow"), or push a tag like
+# v1.0-eob to also publish a GitHub Release with the binaries attached.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+env:
+  ENGINES: --enable-engine=kyra
+
+jobs:
+  linux:
+    name: Linux (x86_64)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libsdl2-dev libsdl2-net-dev \
+            zlib1g-dev libpng-dev libjpeg-turbo8-dev libfreetype6-dev \
+            libogg-dev libvorbis-dev libflac-dev libmad0-dev
+      - name: Configure
+        run: ./configure ${ENGINES}
+      - name: Build
+        run: make -j$(nproc)
+      - name: Package
+        run: |
+          DIR=scummvm-eob-linux-x86_64
+          mkdir -p "$DIR"
+          cp scummvm "$DIR"/
+          cp $(make print-dists) "$DIR"/ 2>/dev/null || true
+          tar -czf "$DIR".tar.gz "$DIR"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scummvm-eob-linux-x86_64
+          path: scummvm-eob-linux-x86_64.tar.gz
+
+  macos:
+    name: macOS (arm64)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: brew install sdl2 sdl2_net freetype libpng libvorbis libogg flac
+      - name: Configure
+        run: ./configure ${ENGINES}
+      - name: Build app bundle
+        run: make bundle -j$(sysctl -n hw.ncpu)
+      - name: Package
+        run: |
+          # ScummVM.app is self-contained; zip it (ditto keeps macOS metadata).
+          ditto -c -k --keepParent ScummVM.app scummvm-eob-macos-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scummvm-eob-macos-arm64
+          path: scummvm-eob-macos-arm64.zip
+
+  windows:
+    name: Windows (x64)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up MSYS2 / MinGW64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            make pkg-config
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-SDL2_net
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-libpng
+            mingw-w64-x86_64-freetype
+            mingw-w64-x86_64-libvorbis
+            mingw-w64-x86_64-libogg
+            mingw-w64-x86_64-flac
+      - name: Configure
+        run: ./configure ${ENGINES}
+      - name: Build
+        run: make -j$(nproc)
+      - name: Package
+        run: |
+          DIR=scummvm-eob-windows-x64
+          mkdir -p "$DIR"
+          cp scummvm.exe "$DIR"/
+          cp $(make print-dists) "$DIR"/ 2>/dev/null || true
+          # Copy the MinGW runtime DLLs the exe links against, into the folder.
+          for dll in $(ldd "$DIR"/scummvm.exe | awk '/mingw64/ {print $3}'); do
+            cp "$dll" "$DIR"/
+          done
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path scummvm-eob-windows-x64 -DestinationPath scummvm-eob-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scummvm-eob-windows-x64
+          path: scummvm-eob-windows-x64.zip
+
+  release:
+    name: Publish release
+    needs: [linux, macos, windows]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
