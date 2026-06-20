@@ -919,6 +919,7 @@ protected:
 	bool _configADDRuleEnhancements;
 	bool _configEnhancedReload;
 	bool _configNPCPatch;
+	bool _configAutomap; // non-original: in-game automap overlay enabled (opt-out)
 
 	Graphics::Surface _thumbNail;
 

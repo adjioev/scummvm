@@ -136,6 +136,8 @@ Then add a game as below.
 ## Using it
 
 1. Add and start an *Eye of the Beholder I* or *II* game in ScummVM as usual.
+   The automap is **on by default**; it can be turned off per game under
+   **Edit Game ▸ Engine ▸ Automap** (opt-out).
 2. The keyboard actions live in the game's keymap. They are enabled by default;
    you can review or rebind them in **ScummVM ▸ Options ▸ Keymaps** (or the
    per-game keymap settings) under names like *Toggle automap*, *Edit map note*,

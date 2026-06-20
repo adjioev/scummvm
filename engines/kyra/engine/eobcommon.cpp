@@ -740,6 +740,7 @@ void EoBCoreEngine::readSettings() {
 	_configADDRuleEnhancements = ConfMan.getBool("addrules");
 	_configEnhancedReload = ConfMan.getBool("mreload");
 	_configNPCPatch = (_flags.gameID == GI_EOB1) ? ConfMan.getBool("npcpatch") : false;
+	_configAutomap = ConfMan.getBool("automap");
 	_configSounds = ConfMan.getBool("sfx_mute") ? 0 : 1;
 	_configMusic = (_flags.platform == Common::kPlatformPC98 || _flags.platform == Common::kPlatformSegaCD) ? (ConfMan.getBool("music_mute") ? 0 : 1) : (_configSounds ? 1 : 0);
 
@@ -802,7 +803,8 @@ void EoBCoreEngine::runLoop() {
 		removeInputTop();
 
 		if (inputFlag && inputFlag == _keyMap[Common::KEYCODE_TAB]) {
-			automapToggle();
+			if (_configAutomap)         // non-original automap, opt-out via game options
+				automapToggle();
 		} else if (_automapVisible && inputFlag == 199) {
 			automapHandleClick();
 		} else if (_automapVisible && inputFlag && inputFlag == _keyMap[Common::KEYCODE_n]) {
